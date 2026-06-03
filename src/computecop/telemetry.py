@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import psutil
 
 from computecop.models import TelemetrySample, ThermalState, utc_now
+from computecop.processes import HeavyProcessDetector
 from computecop.thermal import ThermalDetector
 
 
@@ -24,9 +25,14 @@ class DiskCounterSnapshot:
 class PsutilTelemetrySampler:
     """Collect host telemetry using psutil with defensive fallbacks."""
 
-    def __init__(self, thermal_detector: ThermalDetector | None = None) -> None:
+    def __init__(
+        self,
+        thermal_detector: ThermalDetector | None = None,
+        process_detector: HeavyProcessDetector | None = None,
+    ) -> None:
         self._disk_snapshot: DiskCounterSnapshot | None = None
         self._thermal_detector = thermal_detector or ThermalDetector()
+        self._process_detector = process_detector or HeavyProcessDetector()
 
     async def sample(self) -> TelemetrySample:
         """Collect a telemetry sample without blocking the event loop."""
@@ -60,6 +66,7 @@ class PsutilTelemetrySampler:
             disk_write_bytes_per_sec=write_rate,
             thermal_state=thermal_state if thermal_state else ThermalState.UNKNOWN,
             temperatures=temperatures,
+            heavy_processes=self._process_detector.sample(),
         )
 
     def _disk_rates(self) -> tuple[float, float]:
