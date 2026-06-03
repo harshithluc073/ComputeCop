@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from computecop.admission import AdmissionController
 from computecop.classifier import RequestClassifier
 from computecop.config import RuntimeConfig, cached_config
-from computecop.models import to_jsonable
+from computecop.models import EndpointKind, to_jsonable
 from computecop.offload import OffloadManager
 from computecop.policy import JuicePolicyEngine
 from computecop.request_queue import AsyncRequestQueue
@@ -169,6 +169,24 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
             family="openai",
         )
 
+    @app.post("/completion")
+    async def llama_completion(request: Request) -> Response:
+        return await _handle_inference_request(
+            runtime=runtime,
+            request=request,
+            upstream_path="/completion",
+            family="llama_cpp",
+        )
+
+    @app.post("/chat/completions")
+    async def llama_chat_completions(request: Request) -> Response:
+        return await _handle_inference_request(
+            runtime=runtime,
+            request=request,
+            upstream_path="/chat/completions",
+            family="llama_cpp",
+        )
+
     return app
 
 app = create_app()
@@ -201,7 +219,7 @@ async def _handle_inference_request(
     if decision.decision.value in {"reject", "yield"}:
         return _decision_response(decision, status_code=429 if decision.retry_after_seconds else 503)
 
-    route = runtime.upstream.route(metadata.endpoint_name)
+    route = _select_route(runtime, metadata.endpoint_name, family)
     shaped_body = _shape_body(family, body, decision.budget) if isinstance(body, dict) else body
     headers = dict(request.headers)
     headers["x-computecop-correlation-id"] = metadata.correlation_id
@@ -265,6 +283,8 @@ async def _json_body(request: Request) -> Any:
 def _shape_body(family: str, body: dict[str, Any], budget) -> dict[str, Any]:
     if family == "ollama":
         return _shape_ollama_body(body, budget)
+    if family == "llama_cpp":
+        return _shape_llama_cpp_body(body, budget)
     return _shape_openai_body(body, budget)
 
 
@@ -296,6 +316,40 @@ def _shape_ollama_body(body: dict[str, Any], budget) -> dict[str, Any]:
     shaped["options"] = options
     shaped["keep_alive"] = shaped.get("keep_alive", "5m" if budget.juice_level >= 50 else "30s")
     return shaped
+
+
+def _shape_llama_cpp_body(body: dict[str, Any], budget) -> dict[str, Any]:
+    shaped = dict(body)
+    if "n_predict" in shaped:
+        shaped["n_predict"] = min(int(shaped["n_predict"]), budget.max_output_tokens)
+    elif "max_tokens" in shaped:
+        shaped["max_tokens"] = min(int(shaped["max_tokens"]), budget.max_output_tokens)
+    else:
+        shaped["n_predict"] = budget.max_output_tokens
+
+    if "n_ctx" in shaped:
+        shaped["n_ctx"] = min(int(shaped["n_ctx"]), budget.max_context_tokens)
+    else:
+        shaped["n_ctx"] = budget.max_context_tokens
+
+    cache_prompt = budget.juice_level >= 35
+    shaped["cache_prompt"] = bool(shaped.get("cache_prompt", cache_prompt))
+    return shaped
+
+
+def _select_route(runtime: ComputeCopRuntime, endpoint_name: str | None, family: str):
+    if endpoint_name:
+        return runtime.upstream.route(endpoint_name)
+    preferred = {
+        "ollama": EndpointKind.OLLAMA,
+        "llama_cpp": EndpointKind.LLAMA_CPP,
+        "openai": EndpointKind.OPENAI_COMPATIBLE,
+    }.get(family)
+    if preferred is not None:
+        for route in runtime.upstream.routes.values():
+            if route.kind == preferred:
+                return route
+    return runtime.upstream.route(None)
 
 
 def _decision_response(decision, status_code: int) -> JSONResponse:
