@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import psutil
 
 from computecop.models import TelemetrySample, ThermalState, utc_now
+from computecop.thermal import ThermalDetector
 
 
 @dataclass(slots=True)
@@ -23,8 +24,9 @@ class DiskCounterSnapshot:
 class PsutilTelemetrySampler:
     """Collect host telemetry using psutil with defensive fallbacks."""
 
-    def __init__(self) -> None:
+    def __init__(self, thermal_detector: ThermalDetector | None = None) -> None:
         self._disk_snapshot: DiskCounterSnapshot | None = None
+        self._thermal_detector = thermal_detector or ThermalDetector()
 
     async def sample(self) -> TelemetrySample:
         """Collect a telemetry sample without blocking the event loop."""
@@ -39,6 +41,12 @@ class PsutilTelemetrySampler:
         memory = psutil.virtual_memory()
         swap = psutil.swap_memory()
         read_rate, write_rate = self._disk_rates()
+        temperatures = self._thermal_detector.read_temperatures()
+        thermal_state = self._thermal_detector.classify(
+            temperatures=temperatures,
+            cpu_percent=cpu_percent,
+            per_core_percent=per_core,
+        )
 
         return TelemetrySample(
             timestamp=utc_now(),
@@ -50,7 +58,8 @@ class PsutilTelemetrySampler:
             swap_used_percent=float(swap.percent),
             disk_read_bytes_per_sec=read_rate,
             disk_write_bytes_per_sec=write_rate,
-            thermal_state=ThermalState.UNKNOWN,
+            thermal_state=thermal_state if thermal_state else ThermalState.UNKNOWN,
+            temperatures=temperatures,
         )
 
     def _disk_rates(self) -> tuple[float, float]:
