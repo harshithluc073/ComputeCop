@@ -142,6 +142,33 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
             family="openai",
         )
 
+    @app.post("/api/generate")
+    async def ollama_generate(request: Request) -> Response:
+        return await _handle_inference_request(
+            runtime=runtime,
+            request=request,
+            upstream_path="/api/generate",
+            family="ollama",
+        )
+
+    @app.post("/api/chat")
+    async def ollama_chat(request: Request) -> Response:
+        return await _handle_inference_request(
+            runtime=runtime,
+            request=request,
+            upstream_path="/api/chat",
+            family="ollama",
+        )
+
+    @app.api_route("/v1/{proxy_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+    async def v1_passthrough(proxy_path: str, request: Request) -> Response:
+        return await _handle_inference_request(
+            runtime=runtime,
+            request=request,
+            upstream_path=f"/v1/{proxy_path}",
+            family="openai",
+        )
+
     return app
 
 app = create_app()
@@ -175,7 +202,7 @@ async def _handle_inference_request(
         return _decision_response(decision, status_code=429 if decision.retry_after_seconds else 503)
 
     route = runtime.upstream.route(metadata.endpoint_name)
-    shaped_body = _shape_openai_body(body, decision.budget) if isinstance(body, dict) else body
+    shaped_body = _shape_body(family, body, decision.budget) if isinstance(body, dict) else body
     headers = dict(request.headers)
     headers["x-computecop-correlation-id"] = metadata.correlation_id
     headers["x-computecop-juice-level"] = str(decision.budget.juice_level)
@@ -235,6 +262,12 @@ async def _json_body(request: Request) -> Any:
         return None
 
 
+def _shape_body(family: str, body: dict[str, Any], budget) -> dict[str, Any]:
+    if family == "ollama":
+        return _shape_ollama_body(body, budget)
+    return _shape_openai_body(body, budget)
+
+
 def _shape_openai_body(body: dict[str, Any], budget) -> dict[str, Any]:
     shaped = dict(body)
     for key in ("max_tokens", "max_completion_tokens"):
@@ -246,6 +279,22 @@ def _shape_openai_body(body: dict[str, Any], budget) -> dict[str, Any]:
     metadata["computecop_juice_level"] = budget.juice_level
     metadata["computecop_context_budget"] = budget.max_context_tokens
     shaped["metadata"] = metadata
+    return shaped
+
+
+def _shape_ollama_body(body: dict[str, Any], budget) -> dict[str, Any]:
+    shaped = dict(body)
+    options = dict(shaped.get("options") or {})
+    if "num_ctx" in options:
+        options["num_ctx"] = min(int(options["num_ctx"]), budget.max_context_tokens)
+    else:
+        options["num_ctx"] = budget.max_context_tokens
+    if "num_predict" in options:
+        options["num_predict"] = min(int(options["num_predict"]), budget.max_output_tokens)
+    else:
+        options["num_predict"] = budget.max_output_tokens
+    shaped["options"] = options
+    shaped["keep_alive"] = shaped.get("keep_alive", "5m" if budget.juice_level >= 50 else "30s")
     return shaped
 
 
