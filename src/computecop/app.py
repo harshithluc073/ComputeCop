@@ -16,6 +16,7 @@ from fastapi.responses import Response, StreamingResponse
 from computecop.admission import AdmissionController
 from computecop.classifier import RequestClassifier
 from computecop.config import RuntimeConfig, cached_config
+from computecop.events import JsonlEventStore
 from computecop.models import EndpointKind, to_jsonable
 from computecop.offload import OffloadManager
 from computecop.policy import JuicePolicyEngine
@@ -44,6 +45,7 @@ class ComputeCopRuntime:
     telemetry_loop: TelemetryLoop
     yield_controller: RamYieldController
     offload_manager: OffloadManager
+    event_store: JsonlEventStore
     queue_workers: list[asyncio.Task[None]]
 
     async def start(self) -> None:
@@ -87,6 +89,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
     routes = [endpoint.to_route() for endpoint in config.endpoints]
     yield_controller = RamYieldController(config.policy)
     offload_manager = OffloadManager(routes)
+    event_store = JsonlEventStore(config.event_log_path)
     yield_controller.register_offload_hook(offload_manager.offload_all)
     telemetry_loop = TelemetryLoop(
         sampler=sampler,
@@ -104,6 +107,8 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
             yield_active=pressure.yield_active,
             yield_reason=pressure.yield_reason,
         )
+        if pressure.yield_active:
+            await event_store.append("policy.yield", reason=pressure.yield_reason)
 
     telemetry_loop.subscribe(update_runtime)
 
@@ -118,6 +123,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         telemetry_loop=telemetry_loop,
         yield_controller=yield_controller,
         offload_manager=offload_manager,
+        event_store=event_store,
         queue_workers=[],
     )
 
@@ -161,6 +167,10 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
     async def telemetry() -> dict[str, object]:
         snapshot = await runtime.state.snapshot()
         return {"telemetry": to_jsonable(snapshot.telemetry)}
+
+    @app.get("/events")
+    async def events(limit: int = 100) -> dict[str, object]:
+        return {"events": list(await runtime.event_store.tail(limit=max(1, min(limit, 500))))}
 
     @app.post("/v1/chat/completions")
     async def openai_chat_completions(request: Request) -> Response:
@@ -244,6 +254,13 @@ async def _handle_inference_request(
         queue_size=runtime.queue.counters().queued,
     )
     await runtime.state.record_decision(decision)
+    await runtime.event_store.append(
+        "admission.decision",
+        decision=decision,
+        path=metadata.path,
+        model=metadata.model,
+        endpoint=metadata.endpoint_name,
+    )
 
     if decision.decision.value in {"reject", "yield"}:
         return decision_response(decision, status_code=429 if decision.retry_after_seconds else 503)
