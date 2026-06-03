@@ -9,7 +9,7 @@ from typing import AsyncIterator
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from computecop.admission import AdmissionController
 from computecop.classifier import RequestClassifier
@@ -18,6 +18,7 @@ from computecop.models import EndpointKind, to_jsonable
 from computecop.offload import OffloadManager
 from computecop.policy import JuicePolicyEngine
 from computecop.request_queue import AsyncRequestQueue
+from computecop.responses import decision_headers, decision_response, error_response
 from computecop.state import RuntimeStateStore
 from computecop.telemetry import PsutilTelemetrySampler
 from computecop.telemetry_loop import TelemetryLoop
@@ -217,7 +218,7 @@ async def _handle_inference_request(
     await runtime.state.record_decision(decision)
 
     if decision.decision.value in {"reject", "yield"}:
-        return _decision_response(decision, status_code=429 if decision.retry_after_seconds else 503)
+        return decision_response(decision, status_code=429 if decision.retry_after_seconds else 503)
 
     route = _select_route(runtime, metadata.endpoint_name, family)
     shaped_body = _shape_body(family, body, decision.budget) if isinstance(body, dict) else body
@@ -237,9 +238,7 @@ async def _handle_inference_request(
                 ),
                 media_type="text/event-stream",
                 headers={
-                    "x-computecop-correlation-id": metadata.correlation_id,
-                    "x-computecop-decision": decision.decision.value,
-                    "x-computecop-juice-level": str(decision.budget.juice_level),
+                    **decision_headers(decision),
                 },
             )
         upstream = await runtime.upstream.request(
@@ -250,21 +249,15 @@ async def _handle_inference_request(
             json_body=shaped_body,
         )
     except UpstreamError as exc:
-        return JSONResponse(
+        return error_response(
             status_code=exc.status_code,
-            content={
-                "error": {
-                    "message": str(exc),
-                    "type": "upstream_error",
-                    "correlation_id": metadata.correlation_id,
-                }
-            },
+            message=str(exc),
+            error_type="upstream_error",
+            correlation_id=metadata.correlation_id,
         )
 
     response_headers = dict(upstream.headers)
-    response_headers["x-computecop-correlation-id"] = metadata.correlation_id
-    response_headers["x-computecop-decision"] = decision.decision.value
-    response_headers["x-computecop-juice-level"] = str(decision.budget.juice_level)
+    response_headers.update(decision_headers(decision))
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,
@@ -350,23 +343,3 @@ def _select_route(runtime: ComputeCopRuntime, endpoint_name: str | None, family:
             if route.kind == preferred:
                 return route
     return runtime.upstream.route(None)
-
-
-def _decision_response(decision, status_code: int) -> JSONResponse:
-    headers = {"x-computecop-correlation-id": decision.correlation_id}
-    if decision.retry_after_seconds is not None:
-        headers["retry-after"] = str(max(1, int(decision.retry_after_seconds)))
-    return JSONResponse(
-        status_code=status_code,
-        headers=headers,
-        content={
-            "error": {
-                "message": decision.reason,
-                "type": f"computecop_{decision.decision.value}",
-                "correlation_id": decision.correlation_id,
-                "retry_after_seconds": decision.retry_after_seconds,
-                "queue_position": decision.queue_position,
-            },
-            "decision": to_jsonable(decision),
-        },
-    )
