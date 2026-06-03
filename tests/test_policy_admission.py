@@ -64,4 +64,3 @@ def test_admission_yields_background_during_ram_pressure() -> None:
     )
     decision = controller.decide(metadata, report, queue_size=0)
     assert decision.decision == DecisionType.YIELD
-

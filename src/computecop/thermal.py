@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Iterable
 
 import psutil
 
@@ -66,11 +66,14 @@ class ThermalDetector:
         readings = tuple(temperatures)
         if readings:
             hottest = max(sample.current_celsius for sample in readings)
-            if any(
-                sample.critical_celsius is not None
-                and sample.current_celsius >= sample.critical_celsius
-                for sample in readings
-            ) or hottest >= self.thresholds.critical_celsius:
+            if (
+                any(
+                    sample.critical_celsius is not None
+                    and sample.current_celsius >= sample.critical_celsius
+                    for sample in readings
+                )
+                or hottest >= self.thresholds.critical_celsius
+            ):
                 return ThermalState.CRITICAL
             if hottest >= self.thresholds.hot_celsius:
                 return ThermalState.HOT
@@ -92,7 +95,11 @@ class ThermalDetector:
 def _optional_float(value: object) -> float | None:
     if value is None:
         return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str):
+        return None
     try:
         return float(value)
-    except (TypeError, ValueError):
+    except ValueError:
         return None

@@ -138,7 +138,9 @@ class LlamaCppOffloadAdapter(BaseOffloadAdapter):
                     False,
                     f"llama.cpp slot clear failed for {', '.join(failures)}",
                 )
-            return OffloadResult(self.route.name, True, True, f"cleared {len(slots)} llama.cpp slot(s)")
+            return OffloadResult(
+                self.route.name, True, True, f"cleared {len(slots)} llama.cpp slot(s)"
+            )
         except (httpx.HTTPError, ValueError) as exc:
             return OffloadResult(self.route.name, True, False, f"llama.cpp offload failed: {exc!r}")
 

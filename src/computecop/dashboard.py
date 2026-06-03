@@ -56,7 +56,9 @@ class Dashboard:
         table.add_column(ratio=1)
         table.add_column(ratio=1)
         if telemetry is None:
-            table.add_row("CPU: collecting", "RAM: collecting", "Thermal: unknown", "Disk: collecting")
+            table.add_row(
+                "CPU: collecting", "RAM: collecting", "Thermal: unknown", "Disk: collecting"
+            )
             return Panel(table, title="Resources", border_style="blue")
 
         table.add_row(

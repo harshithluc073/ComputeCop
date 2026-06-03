@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
+from typing import cast
 
 from computecop.models import (
     AdmissionDecision,
@@ -39,7 +40,7 @@ class RuntimeSnapshot:
     recent_decisions: tuple[AdmissionDecision, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, object]:
-        return to_jsonable(self)
+        return cast(dict[str, object], to_jsonable(self))
 
 
 class RuntimeStateStore:

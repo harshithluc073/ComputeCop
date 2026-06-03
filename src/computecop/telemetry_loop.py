@@ -12,7 +12,6 @@ from computecop.logging import get_logger, log_event
 from computecop.models import TelemetrySample
 from computecop.telemetry import PsutilTelemetrySampler
 
-
 TelemetrySubscriber = Callable[[TelemetrySample], Awaitable[None] | None]
 
 
@@ -93,11 +92,9 @@ class TelemetryLoop:
         cpu = sum(item.cpu_percent for item in self._history) / len(self._history)
         ram = sum(item.ram_used_percent for item in self._history) / len(self._history)
         swap = sum(item.swap_used_percent for item in self._history) / len(self._history)
-        read_rate = (
-            sum(item.disk_read_bytes_per_sec for item in self._history) / len(self._history)
-        )
-        write_rate = (
-            sum(item.disk_write_bytes_per_sec for item in self._history) / len(self._history)
+        read_rate = sum(item.disk_read_bytes_per_sec for item in self._history) / len(self._history)
+        write_rate = sum(item.disk_write_bytes_per_sec for item in self._history) / len(
+            self._history
         )
 
         return TelemetrySample(

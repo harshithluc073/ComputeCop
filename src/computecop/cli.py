@@ -45,7 +45,9 @@ def run(
     bind_port = port or config.server.port
     if bind_host not in {"127.0.0.1", "localhost", "::1"} and not config.server.expose_remote:
         raise typer.BadParameter("remote exposure requires COMPUTECOP_EXPOSE_REMOTE=true")
-    uvicorn.run(create_app(config), host=bind_host, port=bind_port, log_level=config.log_level.lower())
+    uvicorn.run(
+        create_app(config), host=bind_host, port=bind_port, log_level=config.log_level.lower()
+    )
 
 
 @app.command()

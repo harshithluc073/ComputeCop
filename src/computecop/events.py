@@ -32,7 +32,9 @@ class JsonlEventStore:
     async def append(self, kind: str, **payload: Any) -> None:
         """Append one event and enforce the retention bound."""
 
-        event = RuntimeEvent(kind=kind, payload=to_jsonable(payload), timestamp=utc_now().isoformat())
+        event = RuntimeEvent(
+            kind=kind, payload=to_jsonable(payload), timestamp=utc_now().isoformat()
+        )
         encoded = json.dumps(to_jsonable(event), sort_keys=True)
         async with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)

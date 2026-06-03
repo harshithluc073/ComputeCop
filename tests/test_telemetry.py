@@ -13,7 +13,9 @@ from computecop.yielding import RamYieldController
 
 
 def test_sampler_uses_psutil_memory(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("psutil.cpu_percent", lambda interval=None, percpu=False: [10.0, 20.0] if percpu else 15.0)
+    monkeypatch.setattr(
+        "psutil.cpu_percent", lambda interval=None, percpu=False: [10.0, 20.0] if percpu else 15.0
+    )
     monkeypatch.setattr(
         "psutil.virtual_memory",
         lambda: SimpleNamespace(total=16 * 1024**3, available=4 * 1024**3, percent=75.0),
@@ -36,14 +38,22 @@ def test_sampler_uses_psutil_memory(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_thermal_detector_classifies_sensor_temperature(monkeypatch: pytest.MonkeyPatch) -> None:
     entry = SimpleNamespace(label="package", current=91.0, high=90.0, critical=100.0)
-    monkeypatch.setattr("psutil.sensors_temperatures", lambda fahrenheit=False: {"coretemp": [entry]})
-    detector = ThermalDetector(ThermalThresholds(warm_celsius=70.0, hot_celsius=85.0, critical_celsius=95.0))
+    monkeypatch.setattr(
+        "psutil.sensors_temperatures",
+        lambda fahrenheit=False: {"coretemp": [entry]},
+        raising=False,
+    )
+    detector = ThermalDetector(
+        ThermalThresholds(warm_celsius=70.0, hot_celsius=85.0, critical_celsius=95.0)
+    )
     readings = detector.read_temperatures()
-    assert detector.classify(readings, cpu_percent=10.0, per_core_percent=(10.0,)) == ThermalState.HOT
+    assert (
+        detector.classify(readings, cpu_percent=10.0, per_core_percent=(10.0,)) == ThermalState.HOT
+    )
 
 
 def test_thermal_detector_falls_back_to_cpu_pressure(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("psutil.sensors_temperatures", lambda fahrenheit=False: {})
+    monkeypatch.setattr("psutil.sensors_temperatures", lambda fahrenheit=False: {}, raising=False)
     detector = ThermalDetector()
     state = detector.classify((), cpu_percent=96.0, per_core_percent=(95.0, 96.0, 30.0, 20.0))
     assert state == ThermalState.HOT

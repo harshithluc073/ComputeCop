@@ -106,7 +106,9 @@ class JuicePolicyEngine:
             juice_level=report.global_juice_level,
             max_context_tokens=int(self.config.base_context_tokens * fraction),
             max_output_tokens=int(self.config.base_output_tokens * fraction),
-            concurrency_limit=max(1, min(self.config.max_background_concurrency, round(3 * fraction))),
+            concurrency_limit=max(
+                1, min(self.config.max_background_concurrency, round(3 * fraction))
+            ),
             reason="; ".join(report.reasons),
         ).clamped()
 

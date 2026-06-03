@@ -7,7 +7,6 @@ from typing import Any
 
 from computecop.models import RequestClass, RequestMetadata, RequestPriority, new_correlation_id
 
-
 BACKGROUND_HINT_HEADERS = {
     "x-computecop-background",
     "x-agent-request",
@@ -16,7 +15,14 @@ BACKGROUND_HINT_HEADERS = {
 }
 
 PROMPT_HINT_VALUES = {"prompt", "user_prompt", "foreground", "interactive", "user"}
-BACKGROUND_HINT_VALUES = {"request", "background", "background_request", "bulk", "agent", "automation"}
+BACKGROUND_HINT_VALUES = {
+    "request",
+    "background",
+    "background_request",
+    "bulk",
+    "agent",
+    "automation",
+}
 
 
 class RequestClassifier:

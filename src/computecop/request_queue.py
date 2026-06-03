@@ -14,7 +14,6 @@ from computecop.config import QueueConfig
 from computecop.models import RequestMetadata, RequestPriority
 from computecop.state import QueueCounters
 
-
 T = TypeVar("T")
 
 

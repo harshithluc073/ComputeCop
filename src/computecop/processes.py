@@ -8,7 +8,6 @@ import psutil
 
 from computecop.models import ProcessSample
 
-
 HEAVY_PROCESS_HINTS = {
     "code",
     "cursor",

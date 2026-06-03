@@ -11,7 +11,6 @@ from computecop.config import PolicyConfig
 from computecop.logging import get_logger, log_event
 from computecop.models import SystemState, TelemetrySample
 
-
 OffloadHook = Callable[[str], Awaitable[None] | None]
 
 

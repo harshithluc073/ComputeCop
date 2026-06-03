@@ -202,6 +202,8 @@ def to_jsonable(value: Any) -> Any:
         return value.value
     if isinstance(value, datetime):
         return value.isoformat()
+    if hasattr(value, "model_dump"):
+        return to_jsonable(value.model_dump(mode="json"))
     if hasattr(value, "__dataclass_fields__"):
         return {key: to_jsonable(item) for key, item in asdict(value).items()}
     if isinstance(value, dict):

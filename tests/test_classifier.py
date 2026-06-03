@@ -23,4 +23,3 @@ def test_background_header_classifies_request() -> None:
         body={"prompt": "summarize logs"},
     )
     assert metadata.request_class == RequestClass.BACKGROUND_REQUEST
-

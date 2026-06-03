@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import AsyncIterator
-
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -26,8 +25,7 @@ from computecop.state import RuntimeStateStore
 from computecop.telemetry import PsutilTelemetrySampler
 from computecop.telemetry_loop import TelemetryLoop
 from computecop.thermal import ThermalDetector, ThermalThresholds
-from computecop.upstream import UpstreamRouter
-from computecop.upstream import UpstreamError
+from computecop.upstream import UpstreamError, UpstreamRouter
 from computecop.yielding import RamYieldController
 
 
@@ -90,7 +88,11 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
     yield_controller = RamYieldController(config.policy)
     offload_manager = OffloadManager(routes)
     event_store = JsonlEventStore(config.event_log_path)
-    yield_controller.register_offload_hook(offload_manager.offload_all)
+
+    async def offload_hook(reason: str) -> None:
+        await offload_manager.offload_all(reason)
+
+    yield_controller.register_offload_hook(offload_hook)
     telemetry_loop = TelemetryLoop(
         sampler=sampler,
         interval_seconds=config.telemetry.interval_seconds,
@@ -228,6 +230,7 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
 
     return app
 
+
 app = create_app()
 
 
@@ -272,7 +275,11 @@ async def _handle_inference_request(
     headers["x-computecop-juice-level"] = str(decision.budget.juice_level)
 
     try:
-        if isinstance(shaped_body, dict) and shaped_body.get("stream") is True and route.supports_streaming:
+        if (
+            isinstance(shaped_body, dict)
+            and shaped_body.get("stream") is True
+            and route.supports_streaming
+        ):
             return StreamingResponse(
                 runtime.upstream.stream(
                     route,

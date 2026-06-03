@@ -66,7 +66,9 @@ def _fake_runtime():
         routes = {"ollama": route}
 
         async def probe(self, route):
-            return HealthProbe(endpoint=route.name, healthy=False, status_code=None, detail="offline")
+            return HealthProbe(
+                endpoint=route.name, healthy=False, status_code=None, detail="offline"
+            )
 
         async def close(self):
             return None

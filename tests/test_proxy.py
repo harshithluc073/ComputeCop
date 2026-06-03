@@ -30,7 +30,9 @@ class FakeUpstream:
         return self.routes[name or "ollama"]
 
     async def probe(self, route: EndpointRoute | None = None) -> HealthProbe:
-        return HealthProbe(endpoint=(route or self.route()).name, healthy=True, status_code=200, detail="OK")
+        return HealthProbe(
+            endpoint=(route or self.route()).name, healthy=True, status_code=200, detail="OK"
+        )
 
     async def request(self, route, *, method, path, headers, json_body, content=None):
         self.last_json = json_body
@@ -53,7 +55,9 @@ async def test_health_and_state_routes(tmp_path: Path) -> None:
     app = _app(tmp_path)
     fake = FakeUpstream()
     app.state.runtime.upstream = fake
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         health = await client.get("/health")
         state = await client.get("/state")
     assert health.status_code == 200
@@ -67,10 +71,16 @@ async def test_openai_chat_shapes_budget(tmp_path: Path) -> None:
     app = _app(tmp_path)
     fake = FakeUpstream()
     app.state.runtime.upstream = fake
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         response = await client.post(
             "/v1/chat/completions",
-            json={"model": "local", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 9999},
+            json={
+                "model": "local",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 9999,
+            },
         )
     assert response.status_code == 200
     assert response.headers["x-computecop-decision"] == "allow"
@@ -84,7 +94,9 @@ async def test_ollama_chat_shapes_options(tmp_path: Path) -> None:
     app = _app(tmp_path)
     fake = FakeUpstream()
     app.state.runtime.upstream = fake
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         response = await client.post(
             "/api/chat",
             headers={"x-computecop-background": "true"},
@@ -99,7 +111,9 @@ async def test_ollama_chat_shapes_options(tmp_path: Path) -> None:
 async def test_background_request_yields_under_ram_pressure(tmp_path: Path) -> None:
     app = _app(tmp_path)
     await app.state.runtime.state.update_telemetry(_telemetry(90.0))
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         response = await client.post(
             "/api/chat",
             headers={"x-computecop-background": "true"},

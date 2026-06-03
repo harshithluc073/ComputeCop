@@ -12,7 +12,6 @@ from rich.logging import RichHandler
 
 from computecop.models import to_jsonable
 
-
 _CONFIGURED = False
 
 
