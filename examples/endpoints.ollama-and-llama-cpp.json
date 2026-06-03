@@ -1,0 +1,19 @@
+[
+  {
+    "name": "ollama",
+    "kind": "ollama",
+    "base_url": "http://127.0.0.1:11434",
+    "health_path": "/api/tags",
+    "timeout_seconds": 180,
+    "supports_streaming": true
+  },
+  {
+    "name": "llama-cpp",
+    "kind": "llama_cpp",
+    "base_url": "http://127.0.0.1:8080",
+    "health_path": "/health",
+    "timeout_seconds": 180,
+    "supports_streaming": true
+  }
+]
+

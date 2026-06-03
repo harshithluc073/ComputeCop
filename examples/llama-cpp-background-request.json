@@ -1,0 +1,14 @@
+{
+  "headers": {
+    "content-type": "application/json",
+    "x-agent-request": "true",
+    "x-computecop-endpoint": "llama-cpp"
+  },
+  "body": {
+    "prompt": "Generate tags for the latest changed files.",
+    "n_ctx": 8192,
+    "n_predict": 512,
+    "cache_prompt": true,
+    "stream": false
+  }
+}

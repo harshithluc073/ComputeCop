@@ -1,0 +1,18 @@
+{
+  "headers": {
+    "content-type": "application/json",
+    "x-computecop-class": "prompt"
+  },
+  "body": {
+    "model": "local-chat",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Explain this stack trace in two paragraphs."
+      }
+    ],
+    "max_tokens": 800,
+    "stream": false
+  }
+}
+

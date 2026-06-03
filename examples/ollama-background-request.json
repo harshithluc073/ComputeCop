@@ -1,0 +1,21 @@
+{
+  "headers": {
+    "content-type": "application/json",
+    "x-computecop-background": "true"
+  },
+  "body": {
+    "model": "llama3.1",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Summarize these background indexing results."
+      }
+    ],
+    "options": {
+      "num_ctx": 8192,
+      "num_predict": 1024
+    },
+    "stream": false
+  }
+}
+
