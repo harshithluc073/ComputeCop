@@ -135,7 +135,10 @@ class AsyncRequestQueue:
         """Continuously execute queued work until the queue is closed."""
 
         while True:
-            request = await self.get()
+            try:
+                request = await self.get()
+            except QueueFullError:
+                return
             try:
                 result = await request.runner()
                 if not request.future.done():

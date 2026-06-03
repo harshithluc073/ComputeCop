@@ -61,8 +61,7 @@ def dashboard() -> None:
         try:
             await Dashboard(runtime.state).run()
         finally:
-            await runtime.telemetry_loop.stop()
-            await runtime.upstream.close()
+            await runtime.stop()
 
     try:
         asyncio.run(_run_dashboard())

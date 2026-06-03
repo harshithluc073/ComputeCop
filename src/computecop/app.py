@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator
@@ -42,6 +44,33 @@ class ComputeCopRuntime:
     telemetry_loop: TelemetryLoop
     yield_controller: RamYieldController
     offload_manager: OffloadManager
+    queue_workers: list[asyncio.Task[None]]
+
+    async def start(self) -> None:
+        """Start background runtime services."""
+
+        await self.telemetry_loop.start()
+        if not self.queue_workers:
+            for index in range(self.config.policy.max_background_concurrency):
+                self.queue_workers.append(
+                    asyncio.create_task(
+                        self.queue.run_worker(),
+                        name=f"computecop-queue-worker-{index}",
+                    )
+                )
+
+    async def stop(self) -> None:
+        """Stop background runtime services."""
+
+        await self.telemetry_loop.stop()
+        await self.queue.close()
+        for worker in self.queue_workers:
+            worker.cancel()
+        for worker in self.queue_workers:
+            with contextlib.suppress(asyncio.CancelledError, RuntimeError):
+                await worker
+        self.queue_workers.clear()
+        await self.upstream.close()
 
 
 def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
@@ -89,6 +118,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         telemetry_loop=telemetry_loop,
         yield_controller=yield_controller,
         offload_manager=offload_manager,
+        queue_workers=[],
     )
 
 
@@ -100,13 +130,11 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.runtime = runtime
-        await runtime.telemetry_loop.start()
+        await runtime.start()
         try:
             yield
         finally:
-            await runtime.telemetry_loop.stop()
-            await runtime.queue.close()
-            await runtime.upstream.close()
+            await runtime.stop()
 
     app = FastAPI(
         title="ComputeCop",
