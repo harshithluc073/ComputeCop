@@ -23,6 +23,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Topic :: System :: Monitoring",
+  "Typing :: Typed",
 ]
 dependencies = [
   "fastapi>=0.111,<1",
@@ -48,6 +49,16 @@ computecop = "computecop.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/computecop"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/README.md",
+  "/LICENSE",
+  "/COMPUTECOP_PLAN.md",
+  "/pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
