@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import heapq
 import itertools
 from collections.abc import Awaitable, Callable
@@ -15,6 +16,7 @@ from computecop.models import RequestMetadata, RequestPriority
 from computecop.state import QueueCounters
 
 T = TypeVar("T")
+QueueChangeCallback = Callable[[QueueCounters], Awaitable[None] | None]
 
 
 class QueueFullError(RuntimeError):
@@ -67,6 +69,12 @@ class AsyncRequestQueue:
         self._running_foreground = 0
         self._completed = 0
         self._rejected = 0
+        self._change_callback: QueueChangeCallback | None = None
+
+    def set_change_callback(self, callback: QueueChangeCallback) -> None:
+        """Register a callback invoked when queue counters change."""
+
+        self._change_callback = callback
 
     async def submit(
         self,
@@ -86,29 +94,36 @@ class AsyncRequestQueue:
             deadline=deadline,
             future=future,
         )
+        rejection_error: QueueFullError | None = None
         async with self._condition:
             if self._closed:
                 self._rejected += 1
-                raise QueueFullError("request queue is closed")
-            self._discard_expired_locked()
-            if len(self._heap) >= self.config.max_size:
+                rejection_error = QueueFullError("request queue is closed")
+            else:
+                self._discard_expired_locked()
+            if rejection_error is None and len(self._heap) >= self.config.max_size:
                 self._rejected += 1
-                raise QueueFullError("request queue is full")
-            heapq.heappush(
-                self._heap,
-                _HeapItem(
-                    priority_rank=_priority_rank(metadata.priority),
-                    sequence=next(self._sequence),
-                    deadline=deadline,
-                    request=queued,
-                ),
-            )
-            self._condition.notify()
+                rejection_error = QueueFullError("request queue is full")
+            if rejection_error is None:
+                heapq.heappush(
+                    self._heap,
+                    _HeapItem(
+                        priority_rank=_priority_rank(metadata.priority),
+                        sequence=next(self._sequence),
+                        deadline=deadline,
+                        request=queued,
+                    ),
+                )
+                self._condition.notify()
+        await self._notify_change()
+        if rejection_error is not None:
+            raise rejection_error
 
         try:
             return await future
         except asyncio.CancelledError:
             queued.cancel()
+            await self._notify_change()
             raise
 
     async def get(self) -> QueuedRequest[Any]:
@@ -127,8 +142,11 @@ class AsyncRequestQueue:
                         self._expire_request(item.request)
                         continue
                     self._mark_running(item.request.metadata.priority, delta=1)
-                    return item.request
+                    request = item.request
+                    break
                 await self._condition.wait()
+        await self._notify_change()
+        return request
 
     async def run_worker(self) -> None:
         """Continuously execute queued work until the queue is closed."""
@@ -149,6 +167,7 @@ class AsyncRequestQueue:
                 async with self._condition:
                     self._mark_running(request.metadata.priority, delta=-1)
                     self._completed += 1
+                await self._notify_change()
 
     async def close(self) -> None:
         """Close the queue and cancel pending work."""
@@ -159,6 +178,7 @@ class AsyncRequestQueue:
                 item.request.cancel()
             self._heap.clear()
             self._condition.notify_all()
+        await self._notify_change()
 
     def counters(self) -> QueueCounters:
         """Return current queue counters."""
@@ -194,6 +214,14 @@ class AsyncRequestQueue:
             self._running_foreground = max(0, self._running_foreground + delta)
         else:
             self._running_background = max(0, self._running_background + delta)
+
+    async def _notify_change(self) -> None:
+        if self._change_callback is None:
+            return
+        with contextlib.suppress(Exception):
+            result = self._change_callback(self.counters())
+            if result is not None:
+                await result
 
 
 def _priority_rank(priority: RequestPriority) -> int:

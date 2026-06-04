@@ -73,7 +73,7 @@ class AdmissionController:
                 budget=budget,
                 reason=budget.reason,
                 correlation_id=metadata.correlation_id,
-                queue_position=queue_size,
+                queue_position=queue_size + 1,
             )
 
         return AdmissionDecision(

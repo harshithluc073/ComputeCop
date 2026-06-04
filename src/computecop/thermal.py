@@ -61,7 +61,7 @@ class ThermalDetector:
         cpu_percent: float,
         per_core_percent: Iterable[float],
     ) -> ThermalState:
-        """Classify thermal state from sensors or Intel laptop-style heuristics."""
+        """Classify thermal state from sensors or CPU saturation heuristics."""
 
         readings = tuple(temperatures)
         if readings:

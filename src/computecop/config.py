@@ -66,6 +66,8 @@ class PolicyConfig(BaseModel):
 
     ram_yield_percent: float = Field(default=85.0, ge=50.0, le=99.0)
     ram_recover_percent: float = Field(default=78.0, ge=30.0, le=98.0)
+    ram_recover_gap_percent: float = Field(default=7.0, ge=2.0, le=30.0)
+    minimum_supported_ram_gb: float = Field(default=6.0, ge=2.0, le=64.0)
     cpu_pressure_percent: float = Field(default=88.0, ge=10.0, le=100.0)
     swap_pressure_percent: float = Field(default=30.0, ge=0.0, le=100.0)
     thermal_warm_celsius: float = Field(default=75.0, ge=30.0, le=110.0)
@@ -211,6 +213,8 @@ def load_config() -> RuntimeConfig:
         "policy": {
             "ram_yield_percent": _float_env("COMPUTECOP_RAM_YIELD_PERCENT", 85.0),
             "ram_recover_percent": _float_env("COMPUTECOP_RAM_RECOVER_PERCENT", 78.0),
+            "ram_recover_gap_percent": _float_env("COMPUTECOP_RAM_RECOVER_GAP_PERCENT", 7.0),
+            "minimum_supported_ram_gb": _float_env("COMPUTECOP_MIN_RAM_GB", 6.0),
             "cpu_pressure_percent": _float_env("COMPUTECOP_CPU_PRESSURE_PERCENT", 88.0),
             "swap_pressure_percent": _float_env("COMPUTECOP_SWAP_PRESSURE_PERCENT", 30.0),
         },

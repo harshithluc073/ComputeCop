@@ -44,5 +44,40 @@ async def test_queue_executes_submitted_work() -> None:
         worker.cancel()
 
 
+@pytest.mark.asyncio
+async def test_queue_change_callback_reports_counters() -> None:
+    queue = AsyncRequestQueue(QueueConfig(max_size=4))
+    observed = []
+    release = asyncio.Event()
+
+    async def on_change(counters):
+        observed.append(counters)
+
+    async def runner() -> str:
+        await release.wait()
+        return "done"
+
+    queue.set_change_callback(on_change)
+    worker = asyncio.create_task(queue.run_worker())
+    metadata = RequestMetadata(
+        method="POST",
+        path="/api/chat",
+        headers={},
+        request_class=RequestClass.BACKGROUND_REQUEST,
+        priority=RequestPriority.BACKGROUND,
+    )
+    task = asyncio.create_task(queue.submit(metadata, runner))
+    await asyncio.sleep(0)
+    release.set()
+    try:
+        assert await task == "done"
+    finally:
+        await queue.close()
+        worker.cancel()
+
+    assert any(counters.queued == 1 for counters in observed)
+    assert observed[-1].completed == 1
+
+
 async def _answer(value: str) -> str:
     return value

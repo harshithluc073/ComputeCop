@@ -42,10 +42,10 @@ class PsutilTelemetrySampler:
     def sample_sync(self) -> TelemetrySample:
         """Collect a telemetry sample synchronously."""
 
-        cpu_percent = float(psutil.cpu_percent(interval=None))
-        per_core = tuple(float(value) for value in psutil.cpu_percent(interval=None, percpu=True))
+        cpu_percent = _safe_cpu_percent(percpu=False)
+        per_core = _safe_cpu_per_core()
         memory = psutil.virtual_memory()
-        swap = psutil.swap_memory()
+        swap = _safe_swap_memory()
         read_rate, write_rate = self._disk_rates()
         temperatures = self._thermal_detector.read_temperatures()
         thermal_state = self._thermal_detector.classify(
@@ -61,7 +61,7 @@ class PsutilTelemetrySampler:
             ram_total_bytes=int(memory.total),
             ram_available_bytes=int(memory.available),
             ram_used_percent=float(memory.percent),
-            swap_used_percent=float(swap.percent),
+            swap_used_percent=float(getattr(swap, "percent", 0.0)),
             disk_read_bytes_per_sec=read_rate,
             disk_write_bytes_per_sec=write_rate,
             thermal_state=thermal_state if thermal_state else ThermalState.UNKNOWN,
@@ -70,7 +70,10 @@ class PsutilTelemetrySampler:
         )
 
     def _disk_rates(self) -> tuple[float, float]:
-        counters = psutil.disk_io_counters()
+        try:
+            counters = psutil.disk_io_counters()
+        except (OSError, RuntimeError):
+            return 0.0, 0.0
         now = time.monotonic()
         if counters is None:
             return 0.0, 0.0
@@ -89,6 +92,40 @@ class PsutilTelemetrySampler:
         read_rate = max(0.0, (current.read_bytes - previous.read_bytes) / elapsed)
         write_rate = max(0.0, (current.write_bytes - previous.write_bytes) / elapsed)
         return read_rate, write_rate
+
+
+def _safe_cpu_percent(*, percpu: bool) -> float:
+    try:
+        value = psutil.cpu_percent(interval=None, percpu=percpu)
+    except (OSError, RuntimeError):
+        return 0.0
+    if isinstance(value, list):
+        return float(sum(value) / len(value)) if value else 0.0
+    return float(value)
+
+
+def _safe_cpu_per_core() -> tuple[float, ...]:
+    try:
+        value = psutil.cpu_percent(interval=None, percpu=True)
+    except (OSError, RuntimeError):
+        return ()
+    return tuple(float(item) for item in value) if value else ()
+
+
+def _safe_swap_memory() -> object:
+    try:
+        return psutil.swap_memory()
+    except (OSError, RuntimeError, AttributeError):
+        return type("SwapMemoryFallback", (), {"percent": 0.0})()
+
+
+def total_ram_bytes() -> int:
+    """Return host RAM capacity, or 0 if psutil cannot provide it."""
+
+    try:
+        return int(psutil.virtual_memory().total)
+    except (OSError, RuntimeError, AttributeError):
+        return 0
 
 
 def format_bytes_per_second(value: float) -> str:

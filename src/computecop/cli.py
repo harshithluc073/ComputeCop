@@ -59,7 +59,7 @@ def dashboard() -> None:
     runtime = build_runtime(config)
 
     async def _run_dashboard() -> None:
-        await runtime.telemetry_loop.start()
+        await runtime.start()
         try:
             await Dashboard(runtime.state).run()
         finally:

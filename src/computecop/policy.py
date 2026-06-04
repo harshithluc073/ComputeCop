@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from computecop.config import PolicyConfig
 from computecop.models import JuiceBudget, RequestClass, SystemState, TelemetrySample, ThermalState
+from computecop.platform import HostMemoryProfile
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +18,10 @@ class PressureReport:
     yield_active: bool
     yield_reason: str | None
     reasons: tuple[str, ...]
+    dynamic_yield_percent: float
+    dynamic_recover_percent: float
+    memory_budget_scale: float
+    total_ram_gb: float | None
 
 
 class JuicePolicyEngine:
@@ -35,17 +40,41 @@ class JuicePolicyEngine:
                 yield_active=False,
                 yield_reason=None,
                 reasons=("telemetry unavailable; using conservative defaults",),
+                dynamic_yield_percent=self.config.ram_yield_percent,
+                dynamic_recover_percent=self.config.ram_recover_percent,
+                memory_budget_scale=1.0,
+                total_ram_gb=None,
             )
 
+        memory = HostMemoryProfile(
+            total_bytes=telemetry.ram_total_bytes,
+            minimum_supported_gb=self.config.minimum_supported_ram_gb,
+        )
+        dynamic_yield_percent = memory.dynamic_yield_percent(self.config.ram_yield_percent)
+        dynamic_recover_percent = memory.dynamic_recover_percent(
+            configured_recover_percent=self.config.ram_recover_percent,
+            recover_gap_percent=self.config.ram_recover_gap_percent,
+            configured_yield_percent=self.config.ram_yield_percent,
+        )
         reasons: list[str] = []
         penalty = 0
         yield_reason: str | None = None
 
-        if telemetry.ram_used_percent >= self.config.ram_yield_percent:
-            yield_reason = f"RAM usage {telemetry.ram_used_percent:.1f}% exceeds yield threshold"
+        if not memory.meets_minimum:
+            reasons.append(
+                f"RAM capacity {memory.total_gb:.1f} GiB is below "
+                f"{self.config.minimum_supported_ram_gb:.1f} GiB baseline"
+            )
+            penalty += 25
+
+        if telemetry.ram_used_percent >= dynamic_yield_percent:
+            yield_reason = (
+                f"RAM usage {telemetry.ram_used_percent:.1f}% exceeds "
+                f"dynamic yield threshold {dynamic_yield_percent:.1f}%"
+            )
             reasons.append(yield_reason)
             penalty += 55
-        elif telemetry.ram_used_percent >= self.config.ram_recover_percent:
+        elif telemetry.ram_used_percent >= dynamic_recover_percent:
             reasons.append(f"RAM usage elevated at {telemetry.ram_used_percent:.1f}%")
             penalty += 25
 
@@ -64,7 +93,7 @@ class JuicePolicyEngine:
 
         if telemetry.heavy_processes:
             total_heavy_mb = sum(process.memory_rss_mb for process in telemetry.heavy_processes[:5])
-            if total_heavy_mb >= 1500:
+            if total_heavy_mb >= memory.heavy_process_pressure_mb:
                 reasons.append(f"heavy developer processes consume {total_heavy_mb:.0f} MiB")
                 penalty += 10
 
@@ -87,6 +116,10 @@ class JuicePolicyEngine:
             yield_active=yield_reason is not None,
             yield_reason=yield_reason,
             reasons=tuple(reasons) or ("system pressure normal",),
+            dynamic_yield_percent=dynamic_yield_percent,
+            dynamic_recover_percent=dynamic_recover_percent,
+            memory_budget_scale=memory.budget_scale,
+            total_ram_gb=memory.total_gb,
         )
 
     def budget_for(self, request_class: RequestClass, report: PressureReport) -> JuiceBudget:
@@ -95,13 +128,15 @@ class JuicePolicyEngine:
         if request_class == RequestClass.USER_PROMPT:
             return JuiceBudget(
                 juice_level=self.config.foreground_juice_level,
-                max_context_tokens=self.config.base_context_tokens,
-                max_output_tokens=self.config.base_output_tokens,
+                max_context_tokens=int(
+                    self.config.base_context_tokens * report.memory_budget_scale
+                ),
+                max_output_tokens=int(self.config.base_output_tokens * report.memory_budget_scale),
                 concurrency_limit=self.config.max_foreground_concurrency,
                 reason="foreground prompt receives full budget",
             ).clamped()
 
-        fraction = max(0.05, report.global_juice_level / 100)
+        fraction = max(0.05, (report.global_juice_level / 100) * report.memory_budget_scale)
         return JuiceBudget(
             juice_level=report.global_juice_level,
             max_context_tokens=int(self.config.base_context_tokens * fraction),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ class FakeUpstream:
             )
         }
         self.last_json: dict[str, Any] | None = None
+        self.request_count = 0
 
     def route(self, name: str | None = None) -> EndpointRoute:
         return self.routes[name or "ollama"]
@@ -35,6 +37,7 @@ class FakeUpstream:
         )
 
     async def request(self, route, *, method, path, headers, json_body, content=None):
+        self.request_count += 1
         self.last_json = json_body
         payload = {"path": path, "json": json_body}
         return UpstreamResponse(
@@ -121,6 +124,34 @@ async def test_background_request_yields_under_ram_pressure(tmp_path: Path) -> N
         )
     assert response.status_code == 429
     assert response.json()["error"]["type"] == "computecop_yield"
+
+
+@pytest.mark.asyncio
+async def test_pressured_background_request_executes_through_queue(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    fake = FakeUpstream()
+    app.state.runtime.upstream = fake
+    worker = asyncio.create_task(app.state.runtime.queue.run_worker())
+    await app.state.runtime.state.update_telemetry(_telemetry(80.0))
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/chat",
+                headers={"x-computecop-background": "true"},
+                json={"model": "mistral", "messages": [{"role": "user", "content": "hi"}]},
+            )
+        snapshot = await app.state.runtime.state.snapshot()
+    finally:
+        await app.state.runtime.queue.close()
+        worker.cancel()
+
+    assert response.status_code == 200
+    assert response.headers["x-computecop-decision"] == "throttle"
+    assert fake.request_count == 1
+    assert snapshot.queue.completed == 1
+    assert snapshot.queue.queued == 0
 
 
 def _app(tmp_path: Path):

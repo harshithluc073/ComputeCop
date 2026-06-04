@@ -36,6 +36,34 @@ def test_sampler_uses_psutil_memory(monkeypatch: pytest.MonkeyPatch) -> None:
     assert sample.swap_used_percent == 5.0
 
 
+def test_sampler_handles_missing_swap_and_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "psutil.cpu_percent", lambda interval=None, percpu=False: [] if percpu else 0.0
+    )
+    monkeypatch.setattr(
+        "psutil.virtual_memory",
+        lambda: SimpleNamespace(total=6 * 1024**3, available=2 * 1024**3, percent=66.7),
+    )
+
+    def fail_swap():
+        raise RuntimeError("swap unavailable")
+
+    def fail_disk():
+        raise OSError("disk counters unavailable")
+
+    monkeypatch.setattr("psutil.swap_memory", fail_swap)
+    monkeypatch.setattr("psutil.disk_io_counters", fail_disk)
+
+    sampler = PsutilTelemetrySampler(
+        thermal_detector=ThermalDetector(),
+        process_detector=HeavyProcessDetector(limit=0),
+    )
+    sample = sampler.sample_sync()
+    assert sample.cpu_per_core_percent == ()
+    assert sample.swap_used_percent == 0.0
+    assert sample.disk_read_bytes_per_sec == 0.0
+
+
 def test_thermal_detector_classifies_sensor_temperature(monkeypatch: pytest.MonkeyPatch) -> None:
     entry = SimpleNamespace(label="package", current=91.0, high=90.0, critical=100.0)
     monkeypatch.setattr(
@@ -74,6 +102,11 @@ def test_heavy_process_detector_filters_processes(monkeypatch: pytest.MonkeyPatc
     samples = HeavyProcessDetector(limit=5).sample()
     assert len(samples) == 1
     assert samples[0].name == "ollama.exe"
+
+
+def test_heavy_process_detector_uses_host_relative_threshold() -> None:
+    detector = HeavyProcessDetector.for_host(total_ram_bytes=6 * 1024**3)
+    assert detector.min_rss_bytes >= 96 * 1024 * 1024
 
 
 @pytest.mark.asyncio

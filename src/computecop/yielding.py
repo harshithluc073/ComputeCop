@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from computecop.config import PolicyConfig
 from computecop.logging import get_logger, log_event
 from computecop.models import SystemState, TelemetrySample
+from computecop.platform import HostMemoryProfile
 
 OffloadHook = Callable[[str], Awaitable[None] | None]
 
@@ -43,16 +44,26 @@ class RamYieldController:
         """Update yield state from telemetry and call hooks on activation."""
 
         hooks_to_call: list[OffloadHook] = []
+        memory = HostMemoryProfile(
+            total_bytes=telemetry.ram_total_bytes,
+            minimum_supported_gb=self.config.minimum_supported_ram_gb,
+        )
+        yield_percent = memory.dynamic_yield_percent(self.config.ram_yield_percent)
+        recover_percent = memory.dynamic_recover_percent(
+            configured_recover_percent=self.config.ram_recover_percent,
+            recover_gap_percent=self.config.ram_recover_gap_percent,
+            configured_yield_percent=self.config.ram_yield_percent,
+        )
         async with self._lock:
-            if not self._active and telemetry.ram_used_percent >= self.config.ram_yield_percent:
+            if not self._active and telemetry.ram_used_percent >= yield_percent:
                 self._active = True
                 self._reason = (
                     f"RAM usage {telemetry.ram_used_percent:.1f}% >= "
-                    f"{self.config.ram_yield_percent:.1f}%"
+                    f"dynamic yield threshold {yield_percent:.1f}%"
                 )
                 hooks_to_call = list(self._offload_hooks)
                 log_event(self._logger, logging.WARNING, "RAM yield activated", reason=self._reason)
-            elif self._active and telemetry.ram_used_percent <= self.config.ram_recover_percent:
+            elif self._active and telemetry.ram_used_percent <= recover_percent:
                 log_event(
                     self._logger,
                     logging.INFO,

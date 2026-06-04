@@ -14,12 +14,12 @@ from computecop.models import (
 from computecop.policy import JuicePolicyEngine
 
 
-def _telemetry(ram: float, cpu: float = 10.0) -> TelemetrySample:
+def _telemetry(ram: float, cpu: float = 10.0, total_gb: int = 16) -> TelemetrySample:
     return TelemetrySample(
         timestamp=utc_now(),
         cpu_percent=cpu,
         cpu_per_core_percent=(cpu,),
-        ram_total_bytes=16 * 1024**3,
+        ram_total_bytes=total_gb * 1024**3,
         ram_available_bytes=2 * 1024**3,
         ram_used_percent=ram,
         swap_used_percent=0.0,
@@ -34,6 +34,22 @@ def test_policy_enters_yield_at_ram_threshold() -> None:
     report = engine.evaluate(_telemetry(90.0))
     assert report.yield_active is True
     assert report.global_juice_level < 70
+
+
+def test_policy_uses_dynamic_thresholds_for_six_gb_hosts() -> None:
+    engine = JuicePolicyEngine(PolicyConfig())
+    report = engine.evaluate(_telemetry(80.0, total_gb=6))
+    assert report.yield_active is True
+    assert report.dynamic_yield_percent < 85.0
+    assert report.memory_budget_scale == 0.5
+
+
+def test_policy_scales_prompt_budget_for_six_gb_hosts() -> None:
+    engine = JuicePolicyEngine(PolicyConfig(base_context_tokens=8192, base_output_tokens=2048))
+    report = engine.evaluate(_telemetry(50.0, total_gb=6))
+    budget = engine.budget_for(RequestClass.USER_PROMPT, report)
+    assert budget.max_context_tokens == 4096
+    assert budget.max_output_tokens == 1024
 
 
 def test_admission_allows_foreground_during_yield() -> None:

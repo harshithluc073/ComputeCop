@@ -12,17 +12,20 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, StreamingResponse
 
+from computecop import __version__
 from computecop.admission import AdmissionController
 from computecop.classifier import RequestClassifier
 from computecop.config import RuntimeConfig, cached_config
 from computecop.events import JsonlEventStore
-from computecop.models import EndpointKind, to_jsonable
+from computecop.models import DecisionType, EndpointKind, RequestClass, RequestMetadata, to_jsonable
 from computecop.offload import OffloadManager
+from computecop.platform import current_platform_name
 from computecop.policy import JuicePolicyEngine
-from computecop.request_queue import AsyncRequestQueue
+from computecop.processes import HeavyProcessDetector
+from computecop.request_queue import AsyncRequestQueue, QueueFullError, QueueTimeoutError
 from computecop.responses import decision_headers, decision_response, error_response
 from computecop.state import RuntimeStateStore
-from computecop.telemetry import PsutilTelemetrySampler
+from computecop.telemetry import PsutilTelemetrySampler, total_ram_bytes
 from computecop.telemetry_loop import TelemetryLoop
 from computecop.thermal import ThermalDetector, ThermalThresholds
 from computecop.upstream import UpstreamError, UpstreamRouter
@@ -81,10 +84,18 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         hot_celsius=config.policy.thermal_hot_celsius,
         critical_celsius=config.policy.thermal_critical_celsius,
     )
-    sampler = PsutilTelemetrySampler(thermal_detector=ThermalDetector(thresholds))
+    sampler = PsutilTelemetrySampler(
+        thermal_detector=ThermalDetector(thresholds),
+        process_detector=HeavyProcessDetector.for_host(
+            total_ram_bytes=total_ram_bytes(),
+            limit=config.telemetry.heavy_process_limit,
+        ),
+    )
     state = RuntimeStateStore()
     policy = JuicePolicyEngine(config.policy)
     routes = [endpoint.to_route() for endpoint in config.endpoints]
+    queue = AsyncRequestQueue(config.queue)
+    queue.set_change_callback(state.update_queue)
     yield_controller = RamYieldController(config.policy)
     offload_manager = OffloadManager(routes)
     event_store = JsonlEventStore(config.event_log_path)
@@ -120,7 +131,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         classifier=RequestClassifier(),
         policy=policy,
         admission=AdmissionController(policy, config.queue),
-        queue=AsyncRequestQueue(config.queue),
+        queue=queue,
         upstream=UpstreamRouter(routes),
         telemetry_loop=telemetry_loop,
         yield_controller=yield_controller,
@@ -146,7 +157,7 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
 
     app = FastAPI(
         title="ComputeCop",
-        version="0.1.0",
+        version=__version__,
         description="Local inference traffic controller with telemetry-aware compute budgeting.",
         lifespan=lifespan,
     )
@@ -157,6 +168,7 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
         probe = await runtime.upstream.probe()
         return {
             "ok": True,
+            "platform": current_platform_name(),
             "upstream": to_jsonable(probe),
         }
 
@@ -265,9 +277,56 @@ async def _handle_inference_request(
         endpoint=metadata.endpoint_name,
     )
 
-    if decision.decision.value in {"reject", "yield"}:
+    if decision.decision in {DecisionType.REJECT, DecisionType.YIELD}:
         return decision_response(decision, status_code=429 if decision.retry_after_seconds else 503)
 
+    async def forward() -> Response:
+        return await _forward_upstream(
+            runtime=runtime,
+            request=request,
+            metadata=metadata,
+            decision=decision,
+            upstream_path=upstream_path,
+            family=family,
+            body=body,
+        )
+
+    if (
+        decision.decision == DecisionType.THROTTLE
+        and metadata.request_class == RequestClass.BACKGROUND_REQUEST
+    ):
+        try:
+            return await runtime.queue.submit(metadata, forward)
+        except QueueFullError:
+            return error_response(
+                status_code=429,
+                message="background queue is full",
+                error_type="computecop_queue_full",
+                correlation_id=metadata.correlation_id,
+                retry_after_seconds=runtime.config.queue.background_retry_after_seconds,
+            )
+        except QueueTimeoutError:
+            return error_response(
+                status_code=504,
+                message="queued background request expired before execution",
+                error_type="computecop_queue_timeout",
+                correlation_id=metadata.correlation_id,
+                retry_after_seconds=runtime.config.queue.background_retry_after_seconds,
+            )
+
+    return await forward()
+
+
+async def _forward_upstream(
+    *,
+    runtime: ComputeCopRuntime,
+    request: Request,
+    metadata: RequestMetadata,
+    decision,
+    upstream_path: str,
+    family: str,
+    body: Any,
+) -> Response:
     route = _select_route(runtime, metadata.endpoint_name, family)
     shaped_body = _shape_body(family, body, decision.budget) if isinstance(body, dict) else body
     headers = dict(request.headers)

@@ -7,6 +7,7 @@ from collections.abc import Iterable
 import psutil
 
 from computecop.models import ProcessSample
+from computecop.platform import HostMemoryProfile
 
 HEAVY_PROCESS_HINTS = {
     "code",
@@ -40,6 +41,13 @@ HEAVY_PROCESS_HINTS = {
     "rustc",
     "cargo",
     "java",
+    "python3",
+    "xcode",
+    "xcodebuild",
+    "safari",
+    "iterm",
+    "terminal",
+    "zsh",
 }
 
 
@@ -58,12 +66,37 @@ class HeavyProcessDetector:
         self.min_cpu_percent = min_cpu_percent
         self.limit = limit
 
+    @classmethod
+    def for_host(
+        cls,
+        *,
+        total_ram_bytes: int,
+        process_hints: Iterable[str] | None = None,
+        min_cpu_percent: float = 5.0,
+        limit: int = 12,
+    ) -> HeavyProcessDetector:
+        """Create a detector with RAM-relative memory thresholds."""
+
+        memory = HostMemoryProfile(total_bytes=total_ram_bytes)
+        min_rss_mb = max(96.0, memory.total_gb * 1024.0 * 0.015)
+        return cls(
+            process_hints=process_hints,
+            min_rss_mb=min_rss_mb,
+            min_cpu_percent=min_cpu_percent,
+            limit=limit,
+        )
+
     def sample(self) -> tuple[ProcessSample, ...]:
         """Return the heaviest matching processes sorted by memory and CPU use."""
 
         samples: list[ProcessSample] = []
         attrs = ["pid", "name", "cpu_percent", "memory_info", "cmdline"]
-        for process in psutil.process_iter(attrs=attrs):
+        try:
+            processes = psutil.process_iter(attrs=attrs)
+        except (OSError, RuntimeError):
+            return ()
+
+        for process in processes:
             try:
                 info = process.info
                 name = str(info.get("name") or "")
