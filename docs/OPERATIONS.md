@@ -3,7 +3,7 @@
 ## Architecture
 
 ComputeCop runs as a local-only FastAPI proxy in front of local inference
-engines. The runtime graph has seven cooperating parts:
+engines. The runtime graph has eight cooperating parts:
 
 1. `PsutilTelemetrySampler` collects CPU, RAM, swap, disk, thermal, and heavy
    process signals.
@@ -15,9 +15,11 @@ engines. The runtime graph has seven cooperating parts:
    API requests.
 5. `AdmissionController` decides whether requests are allowed, throttled,
    rejected, or held during RAM-yield pressure.
-6. `UpstreamRouter` forwards accepted traffic to Ollama, llama.cpp, or
+6. `AsyncRequestQueue` executes throttled background traffic with bounded
+   priority ordering and live queue counters.
+7. `UpstreamRouter` forwards accepted traffic to Ollama, llama.cpp, or
    OpenAI-compatible local endpoints.
-7. `Dashboard` renders live host and policy state in a Rich terminal interface.
+8. `Dashboard` renders live host and policy state in a Rich terminal interface.
 
 ## Prompt Versus Request Semantics
 
@@ -48,16 +50,32 @@ For OpenAI-compatible calls, ComputeCop shapes `max_tokens` and attaches budget
 metadata. For Ollama it shapes `options.num_ctx`, `options.num_predict`, and
 `keep_alive`. For llama.cpp it shapes `n_ctx`, `n_predict`, and `cache_prompt`.
 
-## RAM Yield
+When the machine is pressured but not yielding, background requests are
+throttled and executed through the bounded async queue. Foreground prompts still
+skip that queue. If the queue is full or the queued request expires, ComputeCop
+returns an explicit retryable error response with the original correlation ID.
 
-The default RAM yield threshold is 85%. When crossed, ComputeCop:
+## Dynamic RAM Yield
+
+ComputeCop derives RAM yield and recovery thresholds from total host memory.
+`COMPUTECOP_RAM_YIELD_PERCENT` is an upper cap, not a fixed assumption. Smaller
+machines reserve a larger share of memory for the operating system and
+foreground applications, while larger machines can tolerate more absolute model
+memory before yielding.
+
+The supported baseline is 6GB RAM. Hosts below that baseline are still handled
+gracefully, but policy applies additional pressure penalties and reduces token
+budgets more aggressively.
+
+When the dynamic yield threshold is crossed, ComputeCop:
 
 - Continues to admit foreground prompts.
 - Returns retryable yield responses for background requests.
 - Calls best-effort model offload hooks for supported local engines.
 - Recovers only after RAM usage drops to the lower hysteresis threshold.
 
-The default recovery threshold is 78%, preventing rapid state flapping.
+The recovery threshold is also dynamic and stays below the yield threshold by
+the configured hysteresis gap, preventing rapid state flapping.
 
 ## Endpoint Configuration
 

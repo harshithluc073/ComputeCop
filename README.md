@@ -1,32 +1,275 @@
 # ComputeCop
 
-ComputeCop is an asyncio-first Python traffic controller for local inference
-endpoints. It sits in front of engines such as Ollama and llama.cpp, monitors
-host pressure with `psutil`, and dynamically budgets background inference work
-so foreground prompts stay responsive on constrained developer machines.
+[![Version](https://img.shields.io/badge/version-0.1.2-blue.svg)](https://github.com/harshithluc073/ComputeCop)
+[![Python](https://img.shields.io/badge/python-3.11%2B-green.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-informational.svg)](#platform-support)
 
-The reference target is an Intel i7 12th Gen workstation with 16GB RAM. The
-agent emphasizes local-only operation, explicit request priority semantics,
-RAM-pressure yielding, thermal awareness, and a Rich terminal dashboard.
+ComputeCop is a local inference traffic controller for developer workstations.
+It sits in front of local LLM endpoints such as Ollama, llama.cpp, and
+OpenAI-compatible servers, watches live system pressure, and dynamically budgets
+background inference work so interactive prompts stay responsive.
 
-## Current capabilities
+Use it when local agents, editors, scripts, and chat sessions are all competing
+for the same CPU and memory. ComputeCop classifies foreground prompts separately
+from background API requests, adjusts each request's compute budget, queues or
+yields lower-priority traffic when the machine is under pressure, and exposes a
+terminal dashboard for live visibility.
 
-- Local inference proxy scaffold for OpenAI-compatible, Ollama-compatible, and
-  llama.cpp-compatible endpoints.
-- Async telemetry, policy, queue, and dashboard architecture.
-- Strict distinction between user prompts and automated background requests.
-- Dynamic `juice_level` budgeting under RAM, CPU, swap, and thermal pressure.
-- RAM-yield behavior when memory utilization exceeds 85%.
+## Why ComputeCop?
 
-## Development
+- **Protect foreground prompts**: interactive user prompts keep priority over
+  automated background inference calls.
+- **Budget compute dynamically**: `juice_level`, context tokens, output tokens,
+  and concurrency respond to live RAM, CPU, swap, thermal, and process pressure.
+- **Prevent memory spirals**: dynamic RAM thresholds adapt to the host machine
+  instead of assuming a fixed hardware profile.
+- **Run locally**: the proxy binds to localhost by default and forwards to local
+  inference engines you control.
+- **Stay observable**: a Rich-powered terminal dashboard shows pressure,
+  queueing, yield state, and recent admission decisions.
+
+## Architecture
+
+```text
+Client / Agent / IDE
+        |
+        v
+ComputeCop Proxy
+        |
+        +--> Request Classifier
+        |       foreground prompt or background request
+        |
+        +--> Telemetry Loop
+        |       CPU, RAM, swap, disk, thermal, heavy processes
+        |
+        +--> Juice Policy Engine
+        |       dynamic budget, yield state, queue guidance
+        |
+        +--> Admission Controller
+        |       allow, throttle, queue, reject, yield
+        |
+        +--> Upstream Router
+                Ollama, llama.cpp, OpenAI-compatible endpoint
+```
+
+## Platform Support
+
+ComputeCop targets:
+
+- Windows 10/11
+- macOS
+- Python 3.11 or newer
+- 6GB RAM minimum recommended baseline
+
+Telemetry is powered by `psutil`. Temperature sensors are optional because
+sensor availability varies by operating system and hardware. When temperature
+data is unavailable, ComputeCop falls back to CPU pressure heuristics and keeps
+running.
+
+## Installation
+
+### Windows
 
 ```powershell
+git clone https://github.com/harshithluc073/ComputeCop.git
+cd ComputeCop
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 computecop --help
 ```
 
-See [COMPUTECOP_PLAN.md](COMPUTECOP_PLAN.md) for the complete implementation
-plan.
+### macOS
 
+```bash
+git clone https://github.com/harshithluc073/ComputeCop.git
+cd ComputeCop
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+computecop --help
+```
+
+## Quick Start
+
+1. Start a local inference engine.
+
+   Ollama example:
+
+   ```bash
+   ollama serve
+   ```
+
+   llama.cpp example:
+
+   ```bash
+   ./llama-server -m ./models/model.gguf --host 127.0.0.1 --port 8080
+   ```
+
+2. Probe configured endpoints.
+
+   ```bash
+   computecop probe
+   ```
+
+3. Run the proxy.
+
+   ```bash
+   computecop run
+   ```
+
+4. Send requests through ComputeCop.
+
+   Foreground prompt:
+
+   ```bash
+   curl http://127.0.0.1:8765/v1/chat/completions \
+     -H "content-type: application/json" \
+     -H "x-computecop-class: prompt" \
+     -d '{"model":"local","messages":[{"role":"user","content":"Explain this code."}]}'
+   ```
+
+   Background request:
+
+   ```bash
+   curl http://127.0.0.1:8765/api/chat \
+     -H "content-type: application/json" \
+     -H "x-computecop-background: true" \
+     -d '{"model":"llama3.1","messages":[{"role":"user","content":"Summarize logs."}]}'
+   ```
+
+## Dashboard
+
+Run the live terminal dashboard:
+
+```bash
+computecop dashboard
+```
+
+The dashboard displays:
+
+- CPU and RAM pressure
+- swap and disk activity
+- thermal state when available
+- global `juice_level`
+- yield state
+- queue counters
+- recent admission decisions
+- heavy local developer processes
+
+## Configuration
+
+ComputeCop works with defaults, then accepts environment overrides.
+
+### Common Settings
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `COMPUTECOP_HOST` | `127.0.0.1` | Proxy bind host. |
+| `COMPUTECOP_PORT` | `8765` | Proxy bind port. |
+| `COMPUTECOP_EXPOSE_REMOTE` | `false` | Required for non-local bind addresses. |
+| `COMPUTECOP_ENDPOINTS` | built-in Ollama and llama.cpp defaults | JSON endpoint list. |
+| `COMPUTECOP_MIN_RAM_GB` | `6.0` | Minimum supported RAM baseline used by policy. |
+| `COMPUTECOP_RAM_YIELD_PERCENT` | `85.0` | Upper cap for dynamic RAM yield threshold. |
+| `COMPUTECOP_RAM_RECOVER_PERCENT` | `78.0` | Upper cap for dynamic RAM recovery threshold. |
+| `COMPUTECOP_RAM_RECOVER_GAP_PERCENT` | `7.0` | Hysteresis gap below dynamic yield threshold. |
+| `COMPUTECOP_CPU_PRESSURE_PERCENT` | `88.0` | CPU pressure threshold. |
+| `COMPUTECOP_QUEUE_MAX_SIZE` | `128` | Maximum queued background requests. |
+| `COMPUTECOP_EVENT_LOG` | user cache directory | Optional JSONL event log path. |
+
+### Endpoint Configuration
+
+`COMPUTECOP_ENDPOINTS` is a JSON list:
+
+```json
+[
+  {
+    "name": "ollama",
+    "kind": "ollama",
+    "base_url": "http://127.0.0.1:11434",
+    "health_path": "/api/tags",
+    "timeout_seconds": 180,
+    "supports_streaming": true
+  },
+  {
+    "name": "llama-cpp",
+    "kind": "llama_cpp",
+    "base_url": "http://127.0.0.1:8080",
+    "health_path": "/health",
+    "timeout_seconds": 180,
+    "supports_streaming": true
+  }
+]
+```
+
+Route a request to a specific endpoint with:
+
+```text
+x-computecop-endpoint: llama-cpp
+```
+
+## Request Priority
+
+ComputeCop distinguishes direct prompts from automated requests.
+
+Foreground prompt headers:
+
+```text
+x-computecop-class: prompt
+x-computecop-priority: foreground
+```
+
+Background request headers:
+
+```text
+x-computecop-background: true
+x-agent-request: true
+x-automation-request: true
+```
+
+Foreground prompts are admitted preferentially. Background requests may be
+throttled, queued, or asked to retry when the host enters yield mode.
+
+## Development
+
+Run the verification suite:
+
+```bash
+python -m ruff format --check .
+python -m ruff check .
+python -m mypy src/computecop
+python -m pytest
+python -m build
+```
+
+Windows helper:
+
+```powershell
+.\scripts\verify.ps1
+```
+
+## Contributing
+
+Contributions are welcome.
+
+1. Fork the repository.
+2. Create a focused feature branch.
+3. Add tests for behavior changes.
+4. Run formatting, linting, typing, tests, and build checks.
+5. Open a pull request with a clear description and verification notes.
+
+Good first areas include endpoint adapters, platform telemetry improvements,
+dashboard refinements, and additional local inference engine examples.
+
+## Security
+
+ComputeCop is local-first and binds to `127.0.0.1` by default. Do not expose it
+on a network interface unless you intentionally place it behind appropriate
+authentication and network controls. See [SECURITY.md](SECURITY.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
