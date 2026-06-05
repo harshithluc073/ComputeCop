@@ -1,6 +1,6 @@
 # ComputeCop
 
-[![Version](https://img.shields.io/badge/version-0.1.2-blue.svg)](https://github.com/harshithluc073/ComputeCop)
+[![Version](https://img.shields.io/badge/version-0.1.3-blue.svg)](https://github.com/harshithluc073/ComputeCop)
 [![Python](https://img.shields.io/badge/python-3.11%2B-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-informational.svg)](#platform-support)
@@ -27,7 +27,8 @@ terminal dashboard for live visibility.
 - **Run locally**: the proxy binds to localhost by default and forwards to local
   inference engines you control.
 - **Stay observable**: a Rich-powered terminal dashboard shows pressure,
-  queueing, yield state, and recent admission decisions.
+  queueing, yield state, recent admission decisions, and the policy rules that
+  explain those decisions.
 
 ## Architecture
 
@@ -158,7 +159,27 @@ The dashboard displays:
 - yield state
 - queue counters
 - recent admission decisions
+- policy explanation traces
 - heavy local developer processes
+
+## Decision Explainability
+
+Every proxied request receives a correlation ID and a policy trace ID in
+response headers:
+
+```text
+x-computecop-correlation-id: ...
+x-computecop-trace-id: ...
+```
+
+Inspect a recent decision locally:
+
+```bash
+curl http://127.0.0.1:8765/decisions/<correlation-id>
+```
+
+The response includes the request class, final decision, shaped budget, dynamic
+RAM thresholds, pressure rules, and penalties used by the policy engine.
 
 ## Configuration
 

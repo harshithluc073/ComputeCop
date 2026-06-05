@@ -36,6 +36,30 @@ background automation. Explicit headers always win:
 Ambiguous automation-looking traffic is classified as background to protect
 foreground responsiveness.
 
+## Decision Explainability
+
+Each admission decision carries a structured policy trace. The trace records the
+telemetry values, dynamic thresholds, triggered rules, penalties, request class,
+queue position, and final shaped budget used for the decision.
+
+Response headers include:
+
+```text
+x-computecop-correlation-id
+x-computecop-trace-id
+x-computecop-decision
+x-computecop-juice-level
+```
+
+Recent decisions can be inspected through:
+
+```text
+GET /decisions/{correlation_id}
+```
+
+The Rich dashboard also includes a "Why" panel that shows the most recent policy
+rules and penalties without exposing prompt or completion bodies.
+
 ## Juice Level
 
 `juice_level` is a 1-100 compute budget. Foreground prompts receive the full

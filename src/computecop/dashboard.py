@@ -38,6 +38,7 @@ class Dashboard:
             self._header(snapshot),
             self._resource_panel(snapshot.telemetry),
             self._policy_panel(snapshot),
+            self._trace_panel(snapshot),
             self._decision_panel(snapshot),
         )
 
@@ -99,6 +100,32 @@ class Dashboard:
         table.add_row("Completed", str(snapshot.queue.completed))
         table.add_row("Rejected", str(snapshot.queue.rejected))
         return Panel(table, title="Policy", border_style="magenta")
+
+    def _trace_panel(self, snapshot: RuntimeSnapshot) -> Panel:
+        latest = snapshot.recent_decisions[0] if snapshot.recent_decisions else None
+        trace = latest.trace if latest is not None else None
+        table = Table(expand=True)
+        table.add_column("Rule")
+        table.add_column("Observed")
+        table.add_column("Threshold")
+        table.add_column("Penalty", justify="right")
+        table.add_column("Detail")
+
+        if trace is None:
+            table.add_row("-", "-", "-", "-", "no policy trace observed")
+            return Panel(table, title="Why", border_style="yellow")
+
+        for rule in trace.rules[:8]:
+            table.add_row(
+                rule.name,
+                "-" if rule.observed is None else str(rule.observed),
+                "-" if rule.threshold is None else str(rule.threshold),
+                str(rule.penalty),
+                rule.detail[:72],
+            )
+        if not trace.rules:
+            table.add_row("-", "-", "-", "-", trace.summary)
+        return Panel(table, title=f"Why: {trace.summary[:64]}", border_style="yellow")
 
     def _decision_panel(self, snapshot: RuntimeSnapshot) -> Panel:
         table = Table(expand=True)
