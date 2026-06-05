@@ -55,6 +55,7 @@ class RuntimeStateStore:
         self._yield_reason: str | None = None
         self._queue = QueueCounters()
         self._recent_decisions: deque[AdmissionDecision] = deque(maxlen=recent_decision_limit)
+        self._decision_by_correlation_id: dict[str, AdmissionDecision] = {}
 
     async def update_telemetry(self, telemetry: TelemetrySample) -> None:
         async with self._lock:
@@ -80,7 +81,11 @@ class RuntimeStateStore:
 
     async def record_decision(self, decision: AdmissionDecision) -> None:
         async with self._lock:
+            if len(self._recent_decisions) == self._recent_decisions.maxlen:
+                oldest = self._recent_decisions[-1]
+                self._decision_by_correlation_id.pop(oldest.correlation_id, None)
             self._recent_decisions.appendleft(decision)
+            self._decision_by_correlation_id[decision.correlation_id] = decision
             if decision.decision == DecisionType.REJECT:
                 self._queue = QueueCounters(
                     queued=self._queue.queued,
@@ -89,6 +94,10 @@ class RuntimeStateStore:
                     rejected=self._queue.rejected + 1,
                     completed=self._queue.completed,
                 )
+
+    async def decision_for_correlation_id(self, correlation_id: str) -> AdmissionDecision | None:
+        async with self._lock:
+            return self._decision_by_correlation_id.get(correlation_id)
 
     async def snapshot(self) -> RuntimeSnapshot:
         async with self._lock:

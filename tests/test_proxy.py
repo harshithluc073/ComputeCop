@@ -87,9 +87,34 @@ async def test_openai_chat_shapes_budget(tmp_path: Path) -> None:
         )
     assert response.status_code == 200
     assert response.headers["x-computecop-decision"] == "allow"
+    assert "x-computecop-trace-id" in response.headers
     assert fake.last_json is not None
     assert fake.last_json["max_tokens"] <= 2048
     assert fake.last_json["metadata"]["computecop_juice_level"] == 100
+
+
+@pytest.mark.asyncio
+async def test_decision_lookup_returns_recent_trace(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    fake = FakeUpstream()
+    app.state.runtime.upstream = fake
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={"x-correlation-id": "trace-lookup"},
+            json={"model": "local", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        lookup = await client.get("/decisions/trace-lookup")
+        missing = await client.get("/decisions/missing-id")
+
+    assert response.status_code == 200
+    assert lookup.status_code == 200
+    body = lookup.json()
+    assert body["decision"]["correlation_id"] == "trace-lookup"
+    assert body["decision"]["trace"]["trace_id"] == response.headers["x-computecop-trace-id"]
+    assert missing.status_code == 404
 
 
 @pytest.mark.asyncio

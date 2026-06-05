@@ -19,6 +19,8 @@ def decision_headers(decision: AdmissionDecision) -> dict[str, str]:
         "x-computecop-priority": decision.priority.value,
         "x-computecop-juice-level": str(decision.budget.juice_level),
     }
+    if decision.trace is not None:
+        headers["x-computecop-trace-id"] = decision.trace.trace_id
     if decision.retry_after_seconds is not None:
         headers["retry-after"] = str(max(1, int(decision.retry_after_seconds)))
     return headers

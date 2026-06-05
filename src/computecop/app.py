@@ -186,6 +186,22 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
     async def events(limit: int = 100) -> dict[str, object]:
         return {"events": list(await runtime.event_store.tail(limit=max(1, min(limit, 500))))}
 
+    @app.get("/decisions/{correlation_id}")
+    async def decision(correlation_id: str) -> Response:
+        found = await runtime.state.decision_for_correlation_id(correlation_id)
+        if found is None:
+            return error_response(
+                status_code=404,
+                message=f"decision '{correlation_id}' was not found in recent history",
+                error_type="computecop_decision_not_found",
+                correlation_id=correlation_id,
+            )
+        return Response(
+            content=json_dumps({"decision": to_jsonable(found)}),
+            media_type="application/json",
+            headers=decision_headers(found),
+        )
+
     @app.post("/v1/chat/completions")
     async def openai_chat_completions(request: Request) -> Response:
         return await _handle_inference_request(
@@ -272,6 +288,7 @@ async def _handle_inference_request(
     await runtime.event_store.append(
         "admission.decision",
         decision=decision,
+        trace_id=decision.trace.trace_id if decision.trace else None,
         path=metadata.path,
         model=metadata.model,
         endpoint=metadata.endpoint_name,
@@ -454,3 +471,9 @@ def _select_route(runtime: ComputeCopRuntime, endpoint_name: str | None, family:
             if route.kind == preferred:
                 return route
     return runtime.upstream.route(None)
+
+
+def json_dumps(value: object) -> str:
+    import json
+
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)

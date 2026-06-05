@@ -5,7 +5,15 @@ import asyncio
 import pytest
 
 from computecop.config import QueueConfig
-from computecop.models import RequestClass, RequestMetadata, RequestPriority, SystemState
+from computecop.models import (
+    AdmissionDecision,
+    DecisionType,
+    JuiceBudget,
+    RequestClass,
+    RequestMetadata,
+    RequestPriority,
+    SystemState,
+)
 from computecop.request_queue import AsyncRequestQueue
 from computecop.state import RuntimeStateStore
 
@@ -22,6 +30,28 @@ async def test_state_policy_snapshot_updates() -> None:
     snapshot = await store.snapshot()
     assert snapshot.system_state == SystemState.PRESSURED
     assert snapshot.global_juice_level == 42
+
+
+@pytest.mark.asyncio
+async def test_state_decision_lookup_by_correlation_id() -> None:
+    store = RuntimeStateStore()
+    decision = AdmissionDecision(
+        decision=DecisionType.ALLOW,
+        request_class=RequestClass.USER_PROMPT,
+        priority=RequestPriority.FOREGROUND,
+        budget=JuiceBudget(
+            juice_level=100,
+            max_context_tokens=8192,
+            max_output_tokens=2048,
+            concurrency_limit=1,
+            reason="test",
+        ),
+        reason="test decision",
+        correlation_id="lookup-id",
+    )
+    await store.record_decision(decision)
+    assert await store.decision_for_correlation_id("lookup-id") == decision
+    assert await store.decision_for_correlation_id("missing") is None
 
 
 @pytest.mark.asyncio
