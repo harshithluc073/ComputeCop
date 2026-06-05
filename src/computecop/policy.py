@@ -5,7 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from computecop.config import PolicyConfig
-from computecop.models import JuiceBudget, RequestClass, SystemState, TelemetrySample, ThermalState
+from computecop.models import (
+    JuiceBudget,
+    PolicyRuleEvent,
+    PolicyRuleStatus,
+    PolicyTrace,
+    RequestClass,
+    ResourcePressureBreakdown,
+    SystemState,
+    TelemetrySample,
+    ThermalState,
+)
 from computecop.platform import HostMemoryProfile
 
 
@@ -22,6 +32,7 @@ class PressureReport:
     dynamic_recover_percent: float
     memory_budget_scale: float
     total_ram_gb: float | None
+    trace: PolicyTrace
 
 
 class JuicePolicyEngine:
@@ -44,6 +55,19 @@ class JuicePolicyEngine:
                 dynamic_recover_percent=self.config.ram_recover_percent,
                 memory_budget_scale=1.0,
                 total_ram_gb=None,
+                trace=PolicyTrace(
+                    rules=(
+                        PolicyRuleEvent(
+                            name="telemetry",
+                            status=PolicyRuleStatus.UNAVAILABLE,
+                            observed=None,
+                            threshold=None,
+                            penalty=0,
+                            detail="telemetry unavailable; using conservative defaults",
+                        ),
+                    ),
+                    summary="telemetry unavailable; using conservative defaults",
+                ),
             )
 
         memory = HostMemoryProfile(
@@ -57,15 +81,41 @@ class JuicePolicyEngine:
             configured_yield_percent=self.config.ram_yield_percent,
         )
         reasons: list[str] = []
+        rules: list[PolicyRuleEvent] = []
         penalty = 0
         yield_reason: str | None = None
+        heavy_process_rss_mb = sum(
+            process.memory_rss_mb for process in telemetry.heavy_processes[:5]
+        )
 
         if not memory.meets_minimum:
-            reasons.append(
+            detail = (
                 f"RAM capacity {memory.total_gb:.1f} GiB is below "
                 f"{self.config.minimum_supported_ram_gb:.1f} GiB baseline"
             )
+            reasons.append(detail)
             penalty += 25
+            rules.append(
+                _rule(
+                    name="memory_capacity",
+                    triggered=True,
+                    observed=round(memory.total_gb, 2),
+                    threshold=self.config.minimum_supported_ram_gb,
+                    penalty=25,
+                    detail=detail,
+                )
+            )
+        else:
+            rules.append(
+                _rule(
+                    name="memory_capacity",
+                    triggered=False,
+                    observed=round(memory.total_gb, 2),
+                    threshold=self.config.minimum_supported_ram_gb,
+                    penalty=0,
+                    detail="host RAM meets configured baseline",
+                )
+            )
 
         if telemetry.ram_used_percent >= dynamic_yield_percent:
             yield_reason = (
@@ -74,28 +124,158 @@ class JuicePolicyEngine:
             )
             reasons.append(yield_reason)
             penalty += 55
+            rules.append(
+                _rule(
+                    name="ram_yield",
+                    triggered=True,
+                    observed=round(telemetry.ram_used_percent, 2),
+                    threshold=round(dynamic_yield_percent, 2),
+                    penalty=55,
+                    detail=yield_reason,
+                )
+            )
         elif telemetry.ram_used_percent >= dynamic_recover_percent:
-            reasons.append(f"RAM usage elevated at {telemetry.ram_used_percent:.1f}%")
+            detail = f"RAM usage elevated at {telemetry.ram_used_percent:.1f}%"
+            reasons.append(detail)
             penalty += 25
+            rules.append(
+                _rule(
+                    name="ram_recover",
+                    triggered=True,
+                    observed=round(telemetry.ram_used_percent, 2),
+                    threshold=round(dynamic_recover_percent, 2),
+                    penalty=25,
+                    detail=detail,
+                )
+            )
+        else:
+            rules.append(
+                _rule(
+                    name="ram_pressure",
+                    triggered=False,
+                    observed=round(telemetry.ram_used_percent, 2),
+                    threshold=round(dynamic_recover_percent, 2),
+                    penalty=0,
+                    detail="RAM pressure below dynamic recovery threshold",
+                )
+            )
 
         if telemetry.cpu_percent >= self.config.cpu_pressure_percent:
-            reasons.append(f"CPU usage elevated at {telemetry.cpu_percent:.1f}%")
+            detail = f"CPU usage elevated at {telemetry.cpu_percent:.1f}%"
+            reasons.append(detail)
             penalty += 15
+            rules.append(
+                _rule(
+                    name="cpu_pressure",
+                    triggered=True,
+                    observed=round(telemetry.cpu_percent, 2),
+                    threshold=self.config.cpu_pressure_percent,
+                    penalty=15,
+                    detail=detail,
+                )
+            )
+        else:
+            rules.append(
+                _rule(
+                    name="cpu_pressure",
+                    triggered=False,
+                    observed=round(telemetry.cpu_percent, 2),
+                    threshold=self.config.cpu_pressure_percent,
+                    penalty=0,
+                    detail="CPU pressure below configured threshold",
+                )
+            )
 
         if telemetry.swap_used_percent >= self.config.swap_pressure_percent:
-            reasons.append(f"swap usage elevated at {telemetry.swap_used_percent:.1f}%")
+            detail = f"swap usage elevated at {telemetry.swap_used_percent:.1f}%"
+            reasons.append(detail)
             penalty += 20
+            rules.append(
+                _rule(
+                    name="swap_pressure",
+                    triggered=True,
+                    observed=round(telemetry.swap_used_percent, 2),
+                    threshold=self.config.swap_pressure_percent,
+                    penalty=20,
+                    detail=detail,
+                )
+            )
+        else:
+            rules.append(
+                _rule(
+                    name="swap_pressure",
+                    triggered=False,
+                    observed=round(telemetry.swap_used_percent, 2),
+                    threshold=self.config.swap_pressure_percent,
+                    penalty=0,
+                    detail="swap pressure below configured threshold",
+                )
+            )
 
         thermal_penalty = self._thermal_penalty(telemetry.thermal_state)
         if thermal_penalty:
-            reasons.append(f"thermal state is {telemetry.thermal_state.value}")
+            detail = f"thermal state is {telemetry.thermal_state.value}"
+            reasons.append(detail)
             penalty += thermal_penalty
+            rules.append(
+                _rule(
+                    name="thermal_pressure",
+                    triggered=True,
+                    observed=telemetry.thermal_state.value,
+                    threshold="warm",
+                    penalty=thermal_penalty,
+                    detail=detail,
+                )
+            )
+        else:
+            rules.append(
+                _rule(
+                    name="thermal_pressure",
+                    triggered=False,
+                    observed=telemetry.thermal_state.value,
+                    threshold="warm",
+                    penalty=0,
+                    detail="thermal pressure below policy threshold",
+                )
+            )
 
         if telemetry.heavy_processes:
-            total_heavy_mb = sum(process.memory_rss_mb for process in telemetry.heavy_processes[:5])
-            if total_heavy_mb >= memory.heavy_process_pressure_mb:
-                reasons.append(f"heavy developer processes consume {total_heavy_mb:.0f} MiB")
+            if heavy_process_rss_mb >= memory.heavy_process_pressure_mb:
+                detail = f"heavy developer processes consume {heavy_process_rss_mb:.0f} MiB"
+                reasons.append(detail)
                 penalty += 10
+                rules.append(
+                    _rule(
+                        name="heavy_process_pressure",
+                        triggered=True,
+                        observed=round(heavy_process_rss_mb, 2),
+                        threshold=round(memory.heavy_process_pressure_mb, 2),
+                        penalty=10,
+                        detail=detail,
+                    )
+                )
+            else:
+                rules.append(
+                    _rule(
+                        name="heavy_process_pressure",
+                        triggered=False,
+                        observed=round(heavy_process_rss_mb, 2),
+                        threshold=round(memory.heavy_process_pressure_mb, 2),
+                        penalty=0,
+                        detail="heavy process memory below host-relative threshold",
+                    )
+                )
+        else:
+            rules.append(
+                _rule(
+                    name="heavy_process_pressure",
+                    triggered=False,
+                    observed=0.0,
+                    threshold=round(memory.heavy_process_pressure_mb, 2),
+                    penalty=0,
+                    detail="no heavy developer processes detected",
+                )
+            )
 
         global_juice = max(
             self.config.minimum_background_juice_level,
@@ -110,6 +290,29 @@ class JuicePolicyEngine:
         else:
             system_state = SystemState.NORMAL
 
+        summary = "; ".join(reasons) if reasons else "system pressure normal"
+        trace = PolicyTrace(
+            pressure=ResourcePressureBreakdown(
+                ram_used_percent=telemetry.ram_used_percent,
+                ram_total_gb=memory.total_gb,
+                ram_available_gb=telemetry.ram_available_gb,
+                dynamic_yield_percent=dynamic_yield_percent,
+                dynamic_recover_percent=dynamic_recover_percent,
+                cpu_percent=telemetry.cpu_percent,
+                cpu_threshold_percent=self.config.cpu_pressure_percent,
+                swap_used_percent=telemetry.swap_used_percent,
+                swap_threshold_percent=self.config.swap_pressure_percent,
+                thermal_state=telemetry.thermal_state,
+                heavy_process_rss_mb=heavy_process_rss_mb,
+                heavy_process_threshold_mb=memory.heavy_process_pressure_mb,
+            ),
+            rules=tuple(rules),
+            system_state=system_state,
+            global_juice_level=global_juice,
+            yield_active=yield_reason is not None,
+            summary=summary,
+        )
+
         return PressureReport(
             system_state=system_state,
             global_juice_level=global_juice,
@@ -120,6 +323,7 @@ class JuicePolicyEngine:
             dynamic_recover_percent=dynamic_recover_percent,
             memory_budget_scale=memory.budget_scale,
             total_ram_gb=memory.total_gb,
+            trace=trace,
         )
 
     def budget_for(self, request_class: RequestClass, report: PressureReport) -> JuiceBudget:
@@ -156,3 +360,22 @@ class JuicePolicyEngine:
         if state == ThermalState.WARM:
             return 10
         return 0
+
+
+def _rule(
+    *,
+    name: str,
+    triggered: bool,
+    observed: float | str | None,
+    threshold: float | str | None,
+    penalty: int,
+    detail: str,
+) -> PolicyRuleEvent:
+    return PolicyRuleEvent(
+        name=name,
+        status=PolicyRuleStatus.TRIGGERED if triggered else PolicyRuleStatus.OBSERVED,
+        observed=observed,
+        threshold=threshold,
+        penalty=penalty if triggered else 0,
+        detail=detail,
+    )

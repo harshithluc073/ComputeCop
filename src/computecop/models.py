@@ -63,6 +63,14 @@ class DecisionType(str, Enum):
     YIELD = "yield"
 
 
+class PolicyRuleStatus(str, Enum):
+    """Whether a policy rule contributed pressure."""
+
+    OBSERVED = "observed"
+    TRIGGERED = "triggered"
+    UNAVAILABLE = "unavailable"
+
+
 def utc_now() -> datetime:
     """Return a timezone-aware UTC timestamp."""
 
@@ -147,6 +155,96 @@ class JuiceBudget:
 
 
 @dataclass(frozen=True, slots=True)
+class PolicyRuleEvent:
+    """One explainable policy rule evaluation."""
+
+    name: str
+    status: PolicyRuleStatus
+    observed: float | str | None
+    threshold: float | str | None
+    penalty: int
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResourcePressureBreakdown:
+    """Telemetry values and dynamic thresholds used by policy."""
+
+    ram_used_percent: float | None
+    ram_total_gb: float | None
+    ram_available_gb: float | None
+    dynamic_yield_percent: float
+    dynamic_recover_percent: float
+    cpu_percent: float | None
+    cpu_threshold_percent: float
+    swap_used_percent: float | None
+    swap_threshold_percent: float
+    thermal_state: ThermalState
+    heavy_process_rss_mb: float
+    heavy_process_threshold_mb: float
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyTrace:
+    """Structured explanation of a policy and admission decision."""
+
+    trace_id: str = field(default_factory=new_correlation_id)
+    created_at: datetime = field(default_factory=utc_now)
+    pressure: ResourcePressureBreakdown | None = None
+    rules: tuple[PolicyRuleEvent, ...] = field(default_factory=tuple)
+    system_state: SystemState = SystemState.NORMAL
+    global_juice_level: int = 100
+    yield_active: bool = False
+    request_class: RequestClass | None = None
+    priority: RequestPriority | None = None
+    decision: DecisionType | None = None
+    endpoint_name: str | None = None
+    path: str | None = None
+    queue_size: int | None = None
+    queue_position: int | None = None
+    final_juice_level: int | None = None
+    shaped_context_tokens: int | None = None
+    shaped_output_tokens: int | None = None
+    summary: str = "policy trace initialized"
+
+    def with_admission(
+        self,
+        *,
+        request_class: RequestClass,
+        priority: RequestPriority,
+        decision: DecisionType,
+        endpoint_name: str | None,
+        path: str,
+        queue_size: int,
+        queue_position: int | None,
+        budget: JuiceBudget,
+        summary: str,
+    ) -> PolicyTrace:
+        """Return a copy enriched with request admission context."""
+
+        return PolicyTrace(
+            trace_id=self.trace_id,
+            created_at=self.created_at,
+            pressure=self.pressure,
+            rules=self.rules,
+            system_state=self.system_state,
+            global_juice_level=self.global_juice_level,
+            yield_active=self.yield_active,
+            request_class=request_class,
+            priority=priority,
+            decision=decision,
+            endpoint_name=endpoint_name,
+            path=path,
+            queue_size=queue_size,
+            queue_position=queue_position,
+            final_juice_level=budget.juice_level,
+            shaped_context_tokens=budget.max_context_tokens,
+            shaped_output_tokens=budget.max_output_tokens,
+            summary=summary,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class RequestMetadata:
     """Normalized metadata used by policy and routing logic."""
 
@@ -177,6 +275,7 @@ class AdmissionDecision:
     correlation_id: str
     retry_after_seconds: float | None = None
     queue_position: int | None = None
+    trace: PolicyTrace | None = None
 
     @property
     def allowed(self) -> bool:

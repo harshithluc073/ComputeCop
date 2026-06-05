@@ -34,6 +34,16 @@ def test_policy_enters_yield_at_ram_threshold() -> None:
     report = engine.evaluate(_telemetry(90.0))
     assert report.yield_active is True
     assert report.global_juice_level < 70
+    assert report.trace.yield_active is True
+    assert {rule.name for rule in report.trace.rules} >= {
+        "memory_capacity",
+        "ram_yield",
+        "cpu_pressure",
+        "swap_pressure",
+        "thermal_pressure",
+        "heavy_process_pressure",
+    }
+    assert any(rule.name == "ram_yield" and rule.penalty == 55 for rule in report.trace.rules)
 
 
 def test_policy_uses_dynamic_thresholds_for_six_gb_hosts() -> None:
@@ -65,6 +75,10 @@ def test_admission_allows_foreground_during_yield() -> None:
     )
     decision = controller.decide(metadata, report, queue_size=0)
     assert decision.decision == DecisionType.ALLOW
+    assert decision.trace is not None
+    assert decision.trace.decision == DecisionType.ALLOW
+    assert decision.trace.request_class == RequestClass.USER_PROMPT
+    assert decision.trace.final_juice_level == decision.budget.juice_level
 
 
 def test_admission_yields_background_during_ram_pressure() -> None:
@@ -80,3 +94,6 @@ def test_admission_yields_background_during_ram_pressure() -> None:
     )
     decision = controller.decide(metadata, report, queue_size=0)
     assert decision.decision == DecisionType.YIELD
+    assert decision.trace is not None
+    assert decision.trace.queue_position == 1
+    assert decision.trace.shaped_context_tokens == decision.budget.max_context_tokens
