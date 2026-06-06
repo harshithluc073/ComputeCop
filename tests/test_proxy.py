@@ -179,6 +179,32 @@ async def test_pressured_background_request_executes_through_queue(tmp_path: Pat
     assert snapshot.queue.queued == 0
 
 
+@pytest.mark.asyncio
+async def test_proxy_emits_guidance_headers(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    fake = FakeUpstream()
+    app.state.runtime.upstream = fake
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # High confidence request (with explicit header)
+        resp_high = await client.post(
+            "/v1/chat/completions",
+            headers={"x-computecop-class": "prompt"},
+            json={"model": "local", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp_high.headers["x-computecop-classification-confidence"] == "high"
+        assert "x-computecop-classification-hint" not in resp_high.headers
+
+        # Low confidence request (no headers, fallback to background default)
+        resp_low = await client.post(
+            "/api/chat",
+            json={"model": "mistral"},  # Just model, no prompts, no headers, no agent UA
+        )
+        assert resp_low.headers["x-computecop-classification-confidence"] == "low"
+        assert resp_low.headers["x-computecop-classification-hint"] == "add x-computecop-background: true for automated work"
+
+
 def _app(tmp_path: Path):
     config = RuntimeConfig(
         event_log_path=tmp_path / "events.jsonl",

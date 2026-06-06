@@ -289,6 +289,7 @@ class AdmissionDecision:
     retry_after_seconds: float | None = None
     queue_position: int | None = None
     trace: PolicyTrace | None = None
+    classification: ClassificationResult | None = None
 
     @property
     def allowed(self) -> bool:

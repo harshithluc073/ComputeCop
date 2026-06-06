@@ -23,6 +23,17 @@ def decision_headers(decision: AdmissionDecision) -> dict[str, str]:
         headers["x-computecop-trace-id"] = decision.trace.trace_id
     if decision.retry_after_seconds is not None:
         headers["retry-after"] = str(max(1, int(decision.retry_after_seconds)))
+    if decision.classification is not None:
+        confidence = decision.classification.confidence_score
+        if confidence >= 0.8:
+            conf_str = "high"
+        elif confidence >= 0.4:
+            conf_str = "medium"
+        else:
+            conf_str = "low"
+        headers["x-computecop-classification-confidence"] = conf_str
+        if conf_str == "low" and decision.classification.recommended_header_fixes:
+            headers["x-computecop-classification-hint"] = decision.classification.recommended_header_fixes[0]
     return headers
 
 

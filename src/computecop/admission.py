@@ -53,6 +53,7 @@ class AdmissionController:
                     budget=budget,
                     summary="foreground prompt admitted",
                 ),
+                classification=metadata.classification,
             )
 
         if queue_size >= self.queue_config.max_size:
@@ -76,6 +77,7 @@ class AdmissionController:
                     budget=budget,
                     summary="background queue is full",
                 ),
+                classification=metadata.classification,
             )
 
         if pressure.yield_active:
@@ -100,6 +102,7 @@ class AdmissionController:
                     budget=budget,
                     summary=pressure.yield_reason or "system is yielding resources",
                 ),
+                classification=metadata.classification,
             )
 
         if pressure.system_state in {SystemState.PRESSURED, SystemState.RECOVERING}:
@@ -123,6 +126,7 @@ class AdmissionController:
                     budget=budget,
                     summary=budget.reason,
                 ),
+                classification=metadata.classification,
             )
 
         decision = DecisionType.ALLOW
@@ -144,4 +148,5 @@ class AdmissionController:
                 budget=budget,
                 summary="background request admitted",
             ),
+            classification=metadata.classification,
         )
