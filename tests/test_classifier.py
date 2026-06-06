@@ -101,7 +101,10 @@ def test_classification_result_details() -> None:
     assert res_fallback.request_class == RequestClass.BACKGROUND_REQUEST
     assert res_fallback.confidence_score == 0.1
     assert len(res_fallback.matched_signals) == 0
-    assert "add x-computecop-background: true for automated work" in res_fallback.recommended_header_fixes
+    assert (
+        "add x-computecop-background: true for automated work"
+        in res_fallback.recommended_header_fixes
+    )
 
     # 7. Low confidence fallback with unrecognized signals (ambiguous)
     metadata_ambig = RequestClassifier().classify(
@@ -113,4 +116,3 @@ def test_classification_result_details() -> None:
     assert res_ambig is not None
     assert res_ambig.confidence_score == 0.1
     assert "unrecognized_explicit_header:invalid-class-name" in res_ambig.ambiguous_signals
-

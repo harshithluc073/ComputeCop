@@ -202,7 +202,10 @@ async def test_proxy_emits_guidance_headers(tmp_path: Path) -> None:
             json={"model": "mistral"},  # Just model, no prompts, no headers, no agent UA
         )
         assert resp_low.headers["x-computecop-classification-confidence"] == "low"
-        assert resp_low.headers["x-computecop-classification-hint"] == "add x-computecop-background: true for automated work"
+        assert (
+            resp_low.headers["x-computecop-classification-hint"]
+            == "add x-computecop-background: true for automated work"
+        )
 
 
 def _app(tmp_path: Path):

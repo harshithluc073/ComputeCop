@@ -33,7 +33,9 @@ def decision_headers(decision: AdmissionDecision) -> dict[str, str]:
             conf_str = "low"
         headers["x-computecop-classification-confidence"] = conf_str
         if conf_str == "low" and decision.classification.recommended_header_fixes:
-            headers["x-computecop-classification-hint"] = decision.classification.recommended_header_fixes[0]
+            headers["x-computecop-classification-hint"] = (
+                decision.classification.recommended_header_fixes[0]
+            )
     return headers
 
 
