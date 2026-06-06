@@ -1,6 +1,6 @@
 # ComputeCop
 
-[![Version](https://img.shields.io/badge/version-0.1.3-blue.svg)](https://github.com/harshithluc073/ComputeCop)
+[![Version](https://img.shields.io/badge/version-0.1.4-blue.svg)](https://github.com/harshithluc073/ComputeCop)
 [![Python](https://img.shields.io/badge/python-3.11%2B-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-informational.svg)](#platform-support)
@@ -253,6 +253,19 @@ x-automation-request: true
 
 Foreground prompts are admitted preferentially. Background requests may be
 throttled, queued, or asked to retry when the host enters yield mode.
+
+### Request Classification Guidance
+
+ComputeCop automatically runs heuristics on incoming request payloads and user agents to infer their category. However, explicit headers guarantee correct scheduling and maximum throughput:
+
+- **Explicit headers** (like `x-computecop-class` or `x-computecop-priority`) yield **high** classification confidence.
+- **Payload/User-Agent heuristics** yield **medium** classification confidence.
+- **Fallbacks** yield **low** classification confidence.
+
+For low-confidence classifications, ComputeCop returns advisory headers in the HTTP response to help you align your integration:
+
+- `x-computecop-classification-confidence`: `"high"`, `"medium"`, or `"low"`.
+- `x-computecop-classification-hint`: returned only when confidence is `low` (e.g. `"add x-computecop-background: true for automated work"`).
 
 ## Development
 
