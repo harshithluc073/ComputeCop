@@ -5,7 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from computecop.models import RequestClass, RequestMetadata, RequestPriority, new_correlation_id
+from computecop.models import (
+    ClassificationResult,
+    RequestClass,
+    RequestMetadata,
+    RequestPriority,
+    new_correlation_id,
+)
 
 BACKGROUND_HINT_HEADERS = {
     "x-computecop-background",
@@ -39,7 +45,7 @@ class RequestClassifier:
     ) -> RequestMetadata:
         normalized_headers = {key.lower(): str(value) for key, value in headers.items()}
         payload = body or {}
-        request_class, priority = self._classify(normalized_headers, payload)
+        result = self._classify_rich(normalized_headers, payload)
         correlation_id = (
             normalized_headers.get("x-correlation-id")
             or normalized_headers.get("x-request-id")
@@ -49,12 +55,13 @@ class RequestClassifier:
             method=method.upper(),
             path=path,
             headers=normalized_headers,
-            request_class=request_class,
-            priority=priority,
+            request_class=result.request_class,
+            priority=result.priority,
             correlation_id=correlation_id,
             client_host=client_host,
             model=_extract_model(payload),
             endpoint_name=normalized_headers.get("x-computecop-endpoint"),
+            classification=result,
         )
 
     def _classify(
@@ -62,36 +69,107 @@ class RequestClassifier:
         headers: Mapping[str, str],
         payload: Mapping[str, Any],
     ) -> tuple[RequestClass, RequestPriority]:
-        explicit = _first_value(
-            headers.get("x-computecop-class"),
-            headers.get("x-computecop-priority"),
-            _nested_payload_value(payload, "metadata", "computecop_class"),
-            _nested_payload_value(payload, "metadata", "priority"),
-            payload.get("computecop_class"),
-            payload.get("priority"),
-        )
-        if explicit in PROMPT_HINT_VALUES:
-            return RequestClass.USER_PROMPT, RequestPriority.FOREGROUND
-        if explicit in BACKGROUND_HINT_VALUES:
-            return RequestClass.BACKGROUND_REQUEST, RequestPriority.BACKGROUND
+        res = self._classify_rich(headers, payload)
+        return res.request_class, res.priority
 
-        if any(_truthy(headers.get(header)) for header in BACKGROUND_HINT_HEADERS):
-            return RequestClass.BACKGROUND_REQUEST, RequestPriority.BACKGROUND
+    def _classify_rich(
+        self,
+        headers: Mapping[str, str],
+        payload: Mapping[str, Any],
+    ) -> ClassificationResult:
+        header_class = headers.get("x-computecop-class")
+        header_priority = headers.get("x-computecop-priority")
+        payload_meta_class = _nested_payload_value(payload, "metadata", "computecop_class")
+        payload_meta_priority = _nested_payload_value(payload, "metadata", "priority")
+        payload_root_class = payload.get("computecop_class")
+        payload_root_priority = payload.get("priority")
+
+        explicit = _first_value(
+            header_class,
+            header_priority,
+            payload_meta_class,
+            payload_meta_priority,
+            payload_root_class,
+            payload_root_priority,
+        )
+
+        if explicit is not None:
+            if explicit in PROMPT_HINT_VALUES:
+                is_header = _first_value(header_class, header_priority) is not None
+                return ClassificationResult(
+                    request_class=RequestClass.USER_PROMPT,
+                    priority=RequestPriority.FOREGROUND,
+                    confidence_score=1.0 if is_header else 0.5,
+                    matched_signals=("explicit_header" if is_header else "explicit_payload_field",),
+                )
+            if explicit in BACKGROUND_HINT_VALUES:
+                is_header = _first_value(header_class, header_priority) is not None
+                return ClassificationResult(
+                    request_class=RequestClass.BACKGROUND_REQUEST,
+                    priority=RequestPriority.BACKGROUND,
+                    confidence_score=1.0 if is_header else 0.5,
+                    matched_signals=("explicit_header" if is_header else "explicit_payload_field",),
+                )
+
+        for header in BACKGROUND_HINT_HEADERS:
+            if _truthy(headers.get(header)):
+                return ClassificationResult(
+                    request_class=RequestClass.BACKGROUND_REQUEST,
+                    priority=RequestPriority.BACKGROUND,
+                    confidence_score=1.0,
+                    matched_signals=(f"header:{header}",),
+                )
 
         user_agent = headers.get("user-agent", "").casefold()
-        if any(token in user_agent for token in ("agent", "automation", "scheduler", "crawler")):
-            return RequestClass.BACKGROUND_REQUEST, RequestPriority.BACKGROUND
+        for token in ("agent", "automation", "scheduler", "crawler"):
+            if token in user_agent:
+                return ClassificationResult(
+                    request_class=RequestClass.BACKGROUND_REQUEST,
+                    priority=RequestPriority.BACKGROUND,
+                    confidence_score=0.5,
+                    matched_signals=(f"user_agent:{token}",),
+                )
 
         if _truthy(_nested_payload_value(payload, "metadata", "interactive")):
-            return RequestClass.USER_PROMPT, RequestPriority.INTERACTIVE
+            return ClassificationResult(
+                request_class=RequestClass.USER_PROMPT,
+                priority=RequestPriority.INTERACTIVE,
+                confidence_score=0.5,
+                matched_signals=("payload_interactive_flag",),
+            )
 
         if _truthy(_nested_payload_value(payload, "metadata", "background")):
-            return RequestClass.BACKGROUND_REQUEST, RequestPriority.BACKGROUND
+            return ClassificationResult(
+                request_class=RequestClass.BACKGROUND_REQUEST,
+                priority=RequestPriority.BACKGROUND,
+                confidence_score=0.5,
+                matched_signals=("payload_background_flag",),
+            )
 
         if _looks_like_chat_prompt(payload):
-            return RequestClass.USER_PROMPT, RequestPriority.INTERACTIVE
+            return ClassificationResult(
+                request_class=RequestClass.USER_PROMPT,
+                priority=RequestPriority.INTERACTIVE,
+                confidence_score=0.5,
+                matched_signals=("chat_prompt_heuristic",),
+            )
 
-        return RequestClass.BACKGROUND_REQUEST, RequestPriority.BACKGROUND
+        ambiguous_signals = []
+        if explicit is not None:
+            is_header = _first_value(header_class, header_priority) is not None
+            if is_header:
+                ambiguous_signals.append(f"unrecognized_explicit_header:{explicit}")
+            else:
+                ambiguous_signals.append(f"unrecognized_explicit_payload:{explicit}")
+
+        return ClassificationResult(
+            request_class=RequestClass.BACKGROUND_REQUEST,
+            priority=RequestPriority.BACKGROUND,
+            confidence_score=0.1,
+            matched_signals=(),
+            ambiguous_signals=tuple(ambiguous_signals),
+            recommended_header_fixes=("add x-computecop-background: true for automated work",),
+        )
 
 
 def _first_value(*values: object) -> str | None:

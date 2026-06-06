@@ -245,6 +245,18 @@ class PolicyTrace:
 
 
 @dataclass(frozen=True, slots=True)
+class ClassificationResult:
+    """Rich result detailing the request classification decision."""
+
+    request_class: RequestClass
+    priority: RequestPriority
+    confidence_score: float
+    matched_signals: tuple[str, ...] = field(default_factory=tuple)
+    ambiguous_signals: tuple[str, ...] = field(default_factory=tuple)
+    recommended_header_fixes: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
 class RequestMetadata:
     """Normalized metadata used by policy and routing logic."""
 
@@ -258,6 +270,7 @@ class RequestMetadata:
     model: str | None = None
     endpoint_name: str | None = None
     received_at: datetime = field(default_factory=utc_now)
+    classification: ClassificationResult | None = None
 
     def header(self, name: str, default: str | None = None) -> str | None:
         return self.headers.get(name.lower(), default)
