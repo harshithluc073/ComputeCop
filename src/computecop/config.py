@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import os
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 

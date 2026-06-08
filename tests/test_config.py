@@ -73,9 +73,11 @@ def test_cli_overrides_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert effective.sources["server.port"] == ConfigSource.CLI
 
 
-def test_computecop_config_env_resolves_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_computecop_config_env_resolves_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     config_file = tmp_path / "computecop.toml"
-    config_file.write_text("[server]\nhost = \"10.0.0.5\"\n", encoding="utf-8")
+    config_file.write_text('[server]\nhost = "10.0.0.5"\n', encoding="utf-8")
     monkeypatch.setenv(CONFIG_ENV_VAR, str(config_file))
     effective = load_effective_config()
     assert effective.config.server.host == "10.0.0.5"

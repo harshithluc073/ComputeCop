@@ -6,7 +6,7 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import typer
 import uvicorn
@@ -40,14 +40,16 @@ class CliContext:
 @app.callback()
 def main(
     ctx: typer.Context,
-    config: Path | None = typer.Option(
-        None,
-        "--config",
-        help="Path to a TOML configuration file.",
-        exists=True,
-        dir_okay=False,
-        readable=True,
-    ),
+    config: Annotated[
+        Path | None,
+        typer.Option(
+            "--config",
+            help="Path to a TOML configuration file.",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+        ),
+    ] = None,
 ) -> None:
     """Run ComputeCop commands."""
 

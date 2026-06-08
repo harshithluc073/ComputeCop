@@ -26,7 +26,9 @@ def test_cli_config_prints_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
 
 
 def test_cli_config_explain_prints_table(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("computecop.cli.load_effective_config", lambda **_: _effective_config(tmp_path))
+    monkeypatch.setattr(
+        "computecop.cli.load_effective_config", lambda **_: _effective_config(tmp_path)
+    )
     result = CliRunner().invoke(app, ["config", "explain"], env={"COLUMNS": "200"})
     assert result.exit_code == 0
     assert "Configuration Sources" in result.output
@@ -35,7 +37,9 @@ def test_cli_config_explain_prints_table(monkeypatch: pytest.MonkeyPatch, tmp_pa
 
 
 def test_cli_config_explain_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("computecop.cli.load_effective_config", lambda **_: _effective_config(tmp_path))
+    monkeypatch.setattr(
+        "computecop.cli.load_effective_config", lambda **_: _effective_config(tmp_path)
+    )
     result = CliRunner().invoke(app, ["config", "explain", "--json"])
     assert result.exit_code == 0
     assert '"entries"' in result.output
