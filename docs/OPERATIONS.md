@@ -112,6 +112,42 @@ Override endpoints with `COMPUTECOP_ENDPOINTS`, a JSON list matching
 `EndpointConfig` fields. Use `x-computecop-endpoint` to route a request to a
 specific configured endpoint by name.
 
+## Upstream Failure Categories
+
+When an upstream endpoint cannot serve a request, ComputeCop converts the
+transport error into a typed failure instead of a generic 502. Each failure
+carries a category, an HTTP status, a retryability flag, and a remediation hint.
+The proxy returns the failure as a normalized error response with an
+`error.type` of `computecop_upstream_<category>` and an `upstream_failure`
+object, and records a prompt-free `upstream.failure` event.
+
+| Category | Status | Retryable | Meaning |
+| --- | --- | --- | --- |
+| `unreachable` | 502 | yes | The endpoint refused the connection or could not be reached. |
+| `timeout` | 504 | yes | The endpoint accepted the connection but did not respond in time. |
+| `route_not_found` | 400 | no | The requested `x-computecop-endpoint` is not configured. |
+| `status_error` | upstream status | only for 408/425/429/5xx | The endpoint returned an HTTP error status. |
+| `stream_interrupted` | 502 | yes | A streaming response closed before completing. |
+| `invalid_response` | 502 | varies | The endpoint returned a malformed or undecodable response. |
+| `misconfigured_endpoint` | 502 | no | The configured `base_url` uses an invalid or unsupported scheme. |
+
+Retryable failures include a `retry-after` header so clients can back off and
+try again.
+
+## Endpoint Probe Diagnostics
+
+`computecop probe` reports practical health detail for each configured endpoint,
+not just a yes/no result:
+
+- measured probe latency in milliseconds
+- consecutive failure streak since the last successful probe
+- last successful probe time
+- the failure category when a probe fails
+
+This makes the command a first-line debugging tool: a high failure streak with
+an `unreachable` category points at a stopped engine, while a `timeout` category
+points at a slow or overloaded model.
+
 ## Commands
 
 ```powershell
