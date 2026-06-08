@@ -28,7 +28,7 @@ from computecop.state import RuntimeStateStore
 from computecop.telemetry import PsutilTelemetrySampler, total_ram_bytes
 from computecop.telemetry_loop import TelemetryLoop
 from computecop.thermal import ThermalDetector, ThermalThresholds
-from computecop.upstream import UpstreamError, UpstreamRouter
+from computecop.upstream import UpstreamFailure, UpstreamRouter
 from computecop.yielding import RamYieldController
 
 
@@ -344,13 +344,13 @@ async def _forward_upstream(
     family: str,
     body: Any,
 ) -> Response:
-    route = _select_route(runtime, metadata.endpoint_name, family)
     shaped_body = _shape_body(family, body, decision.budget) if isinstance(body, dict) else body
     headers = dict(request.headers)
     headers["x-computecop-correlation-id"] = metadata.correlation_id
     headers["x-computecop-juice-level"] = str(decision.budget.juice_level)
 
     try:
+        route = _select_route(runtime, metadata.endpoint_name, family)
         if (
             isinstance(shaped_body, dict)
             and shaped_body.get("stream") is True
@@ -376,12 +376,25 @@ async def _forward_upstream(
             headers=headers,
             json_body=shaped_body,
         )
-    except UpstreamError as exc:
+    except UpstreamFailure as exc:
+        await runtime.event_store.append(
+            "upstream.failure",
+            correlation_id=metadata.correlation_id,
+            category=exc.category.value,
+            status_code=exc.status_code,
+            endpoint=exc.endpoint or metadata.endpoint_name,
+            retryable=exc.retryable,
+            path=upstream_path,
+        )
         return error_response(
             status_code=exc.status_code,
-            message=str(exc),
-            error_type="upstream_error",
+            message=exc.message,
+            error_type=f"computecop_upstream_{exc.category.value}",
             correlation_id=metadata.correlation_id,
+            retry_after_seconds=(
+                runtime.config.queue.background_retry_after_seconds if exc.retryable else None
+            ),
+            extra={"upstream_failure": exc.to_dict()},
         )
 
     response_headers = dict(upstream.headers)
