@@ -1,6 +1,6 @@
 # ComputeCop
 
-[![Version](https://img.shields.io/badge/version-0.1.6-blue.svg)](https://github.com/harshithluc073/ComputeCop)
+[![Version](https://img.shields.io/badge/version-0.1.7-blue.svg)](https://github.com/harshithluc073/ComputeCop)
 [![Python](https://img.shields.io/badge/python-3.11%2B-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-informational.svg)](#platform-support)
