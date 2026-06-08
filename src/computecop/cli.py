@@ -18,6 +18,7 @@ from computecop.config import ConfigError, EffectiveConfig, load_config, load_ef
 from computecop.dashboard import Dashboard
 from computecop.logging import configure_logging
 from computecop.models import to_jsonable
+from computecop.shutdown import ShutdownCoordinator, cancel_task
 from computecop.telemetry import PsutilTelemetrySampler
 from computecop.upstream import HealthProbe
 
@@ -122,18 +123,28 @@ def dashboard(ctx: typer.Context) -> None:
     config = _load_or_exit(ctx)
     configure_logging(config.log_level, rich=True)
     runtime = build_runtime(config)
+    shutdown = ShutdownCoordinator()
 
     async def _run_dashboard() -> None:
         await runtime.start()
+        dashboard_task = asyncio.create_task(Dashboard(runtime.state).run())
         try:
-            await Dashboard(runtime.state).run()
+            await dashboard_task
+        except asyncio.CancelledError:
+            shutdown.request_shutdown()
+            raise
         finally:
-            await runtime.stop()
+            await cancel_task(dashboard_task)
+            await shutdown.shutdown_runtime(runtime)
 
     try:
         asyncio.run(_run_dashboard())
     except KeyboardInterrupt:
-        Console().print("[yellow]ComputeCop dashboard stopped[/yellow]")
+        if shutdown.request_shutdown():
+            Console().print("[yellow]ComputeCop dashboard stopped[/yellow]")
+    except asyncio.CancelledError:
+        if shutdown.request_shutdown():
+            Console().print("[yellow]ComputeCop dashboard stopped[/yellow]")
 
 
 @app.command()
@@ -179,7 +190,10 @@ def probe(ctx: typer.Context) -> None:
             await runtime.upstream.close()
         Console().print(table)
 
-    asyncio.run(_probe())
+    try:
+        asyncio.run(_probe())
+    except KeyboardInterrupt:
+        Console().print("[yellow]ComputeCop probe stopped[/yellow]")
 
 
 def _probe_status(result: HealthProbe) -> str:
