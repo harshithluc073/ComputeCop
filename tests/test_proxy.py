@@ -156,7 +156,7 @@ async def test_pressured_background_request_executes_through_queue(tmp_path: Pat
     app = _app(tmp_path)
     fake = FakeUpstream()
     app.state.runtime.upstream = fake
-    worker = asyncio.create_task(app.state.runtime.queue.run_worker())
+    worker = asyncio.create_task(app.state.runtime.queue.run_worker("test-worker"))
     await app.state.runtime.state.update_telemetry(_telemetry(80.0))
     try:
         async with httpx.AsyncClient(
