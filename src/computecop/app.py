@@ -59,6 +59,7 @@ class ComputeCopRuntime:
         if not self.queue_workers:
             for index in range(self.config.policy.max_background_concurrency):
                 worker_id = f"computecop-queue-worker-{index}"
+                await self.queue.register_worker(worker_id)
                 self.queue_workers.append(
                     asyncio.create_task(
                         self.queue.run_worker(worker_id),

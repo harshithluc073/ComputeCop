@@ -83,6 +83,16 @@ class AsyncRequestQueue:
 
         self._change_callback = callback
 
+    async def register_worker(self, worker_id: str) -> None:
+        """Register a queue worker before its task starts."""
+
+        async with self._condition:
+            self._worker_states.setdefault(
+                worker_id,
+                WorkerSnapshot(worker_id=worker_id, state=WorkerState.IDLE),
+            )
+        await self._notify_change()
+
     @property
     def lifecycle_state(self) -> QueueLifecycleState:
         return self._lifecycle_state

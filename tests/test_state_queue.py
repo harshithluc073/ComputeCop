@@ -206,6 +206,22 @@ async def test_queue_close_cancels_pending_background_work() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_registers_workers_at_start() -> None:
+    runtime = build_runtime(RuntimeConfig(policy={"max_background_concurrency": 2}))
+    await runtime.start()
+    try:
+        workers = runtime.queue.snapshot().workers
+        assert len(workers) == 2
+        assert {worker.worker_id for worker in workers} == {
+            "computecop-queue-worker-0",
+            "computecop-queue-worker-1",
+        }
+        assert all(worker.state == WorkerState.IDLE for worker in workers)
+    finally:
+        await runtime.stop(drain_timeout_seconds=0)
+
+
+@pytest.mark.asyncio
 async def test_runtime_stop_drains_then_closes_queue() -> None:
     runtime = build_runtime(RuntimeConfig(queue=QueueConfig(shutdown_drain_seconds=0.0)))
     await runtime.start()
@@ -232,13 +248,14 @@ async def test_runtime_stop_drains_then_closes_queue() -> None:
 async def test_queue_worker_states_are_tracked() -> None:
     queue = AsyncRequestQueue(QueueConfig(max_size=4))
     release = asyncio.Event()
+    metadata = _background_metadata()
 
     async def runner() -> str:
         await release.wait()
         return "done"
 
     worker = asyncio.create_task(queue.run_worker("worker-a"))
-    submit_task = asyncio.create_task(queue.submit(_background_metadata(), runner))
+    submit_task = asyncio.create_task(queue.submit(metadata, runner))
     running = None
     for _ in range(100):
         await asyncio.sleep(0.01)
@@ -254,6 +271,7 @@ async def test_queue_worker_states_are_tracked() -> None:
             break
     assert running is not None
     assert running.state == WorkerState.RUNNING
+    assert running.active_correlation_id == metadata.correlation_id
     release.set()
     try:
         assert await submit_task == "done"

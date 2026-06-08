@@ -66,7 +66,10 @@ async def test_health_and_state_routes(tmp_path: Path) -> None:
     assert health.status_code == 200
     assert health.json()["upstream"]["healthy"] is True
     assert state.status_code == 200
-    assert state.json()["global_juice_level"] == 100
+    body = state.json()
+    assert body["global_juice_level"] == 100
+    assert body["queue"]["lifecycle_state"] == "accepting"
+    assert isinstance(body["queue"]["workers"], list)
 
 
 @pytest.mark.asyncio
