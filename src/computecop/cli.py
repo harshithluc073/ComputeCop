@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.table import Table
 
 from computecop.app import build_runtime, create_app
-from computecop.config import ConfigError, load_config
+from computecop.config import ConfigError, EffectiveConfig, load_config, load_effective_config
 from computecop.dashboard import Dashboard
 from computecop.logging import configure_logging
 from computecop.models import to_jsonable
@@ -26,6 +26,10 @@ app = typer.Typer(
     help="Local inference traffic controller with telemetry-aware compute budgeting.",
     no_args_is_help=True,
 )
+config_app = typer.Typer(help="Inspect effective ComputeCop configuration.")
+app.add_typer(config_app, name="config")
+
+
 class CliContext:
     """Shared CLI state for config path resolution."""
 
@@ -51,12 +55,41 @@ def main(
     ctx.obj["cli"] = CliContext(config_path=config)
 
 
-@app.command("config")
+@config_app.callback(invoke_without_command=True)
 def print_config(ctx: typer.Context) -> None:
     """Print the effective runtime configuration."""
 
+    if ctx.invoked_subcommand is not None:
+        return
     config = _load_or_exit(ctx)
     Console().print_json(json.dumps(to_jsonable(config)))
+
+
+@config_app.command("explain")
+def explain_config(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the config explanation as JSON.",
+    ),
+) -> None:
+    """Explain effective configuration values and their sources."""
+
+    effective = _load_effective_or_exit(ctx)
+    if json_output:
+        Console().print_json(json.dumps(effective.explain_document()))
+        return
+
+    table = Table(title="ComputeCop Configuration Sources")
+    table.add_column("Setting")
+    table.add_column("Value")
+    table.add_column("Source")
+    for entry in effective.explain_entries():
+        table.add_row(entry["path"], _format_explain_value(entry["value"]), entry["source"])
+    Console().print(table)
+    if effective.config_path is not None:
+        Console().print(f"[dim]Config file: {effective.config_path}[/dim]")
 
 
 @app.command()
@@ -169,6 +202,13 @@ def _cli_context(ctx: typer.Context) -> CliContext:
     return cli if isinstance(cli, CliContext) else CliContext()
 
 
+def _load_effective_or_exit(ctx: typer.Context) -> EffectiveConfig:
+    try:
+        return load_effective_config(config_path=_cli_context(ctx).config_path)
+    except ConfigError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
 def _load_or_exit(ctx: typer.Context, *, cli_overrides: dict[str, Any] | None = None):
     try:
         return load_config(
@@ -196,3 +236,11 @@ def _cli_overrides(
     if log_level is not None:
         overrides["log_level"] = log_level.upper()
     return overrides or None
+
+
+def _format_explain_value(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, separators=(",", ":"))
+    return str(value)

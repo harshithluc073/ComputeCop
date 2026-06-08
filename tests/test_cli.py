@@ -7,7 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from computecop.cli import app
-from computecop.config import EndpointConfig, RuntimeConfig
+from computecop.config import ConfigSource, EffectiveConfig, EndpointConfig, RuntimeConfig
 from computecop.models import EndpointKind, EndpointRoute
 from computecop.upstream import HealthProbe, UpstreamFailureCategory
 
@@ -23,6 +23,23 @@ def test_cli_config_prints_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     result = CliRunner().invoke(app, ["config"])
     assert result.exit_code == 0
     assert '"server"' in result.output
+
+
+def test_cli_config_explain_prints_table(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("computecop.cli.load_effective_config", lambda **_: _effective_config(tmp_path))
+    result = CliRunner().invoke(app, ["config", "explain"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0
+    assert "Configuration Sources" in result.output
+    assert "server.port" in result.output
+    assert "default" in result.output
+
+
+def test_cli_config_explain_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("computecop.cli.load_effective_config", lambda **_: _effective_config(tmp_path))
+    result = CliRunner().invoke(app, ["config", "explain", "--json"])
+    assert result.exit_code == 0
+    assert '"entries"' in result.output
+    assert '"server.port"' in result.output
 
 
 def test_cli_probe_prints_table(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -53,6 +70,15 @@ def _config(tmp_path: Path) -> RuntimeConfig:
                 health_path="/api/tags",
             )
         ],
+    )
+
+
+def _effective_config(tmp_path: Path) -> EffectiveConfig:
+    config = _config(tmp_path)
+    return EffectiveConfig(
+        config=config,
+        sources={"server.port": ConfigSource.DEFAULT},
+        config_path=tmp_path / "computecop.toml",
     )
 
 
