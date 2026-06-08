@@ -291,3 +291,67 @@ def test_failure_to_dict_is_json_safe() -> None:
     payload: dict[str, Any] = failure.to_dict()
     assert json.loads(json.dumps(payload)) == payload
     assert payload["category"] == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_probe_records_latency_and_resets_failures_on_success() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    router = UpstreamRouter([_route()])
+    await router._client.aclose()
+    router._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        probe = await router.probe(_route())
+    finally:
+        await router.close()
+
+    assert probe.healthy is True
+    assert probe.status_code == 200
+    assert probe.failure_streak == 0
+    assert probe.latency_ms is not None and probe.latency_ms >= 0.0
+    assert probe.last_success_at is not None
+    assert probe.checked_at is not None
+    assert probe.base_url == "http://endpoint.test"
+    assert probe.health_path == "/health"
+    assert probe.failure_category is None
+
+
+@pytest.mark.asyncio
+async def test_probe_tracks_failure_streak_and_category() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    router = UpstreamRouter([_route()])
+    await router._client.aclose()
+    router._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        first = await router.probe(_route())
+        second = await router.probe(_route())
+    finally:
+        await router.close()
+
+    assert first.healthy is False
+    assert first.failure_category is UpstreamFailureCategory.UNREACHABLE
+    assert first.failure_streak == 1
+    assert second.failure_streak == 2
+    assert second.last_success_at is None
+
+
+@pytest.mark.asyncio
+async def test_probe_marks_server_error_status() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    router = UpstreamRouter([_route()])
+    await router._client.aclose()
+    router._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        probe = await router.probe(_route())
+    finally:
+        await router.close()
+
+    assert probe.healthy is False
+    assert probe.status_code == 503
+    assert probe.failure_category is UpstreamFailureCategory.STATUS_ERROR
+    assert probe.failure_streak == 1

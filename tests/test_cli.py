@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 from computecop.cli import app
 from computecop.config import EndpointConfig, RuntimeConfig
 from computecop.models import EndpointKind, EndpointRoute
-from computecop.upstream import HealthProbe
+from computecop.upstream import HealthProbe, UpstreamFailureCategory
 
 
 def test_cli_help_imports() -> None:
@@ -28,9 +28,12 @@ def test_cli_config_prints_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
 def test_cli_probe_prints_table(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr("computecop.cli.load_config", lambda: _config(tmp_path))
     monkeypatch.setattr("computecop.cli.build_runtime", lambda config: _fake_runtime())
-    result = CliRunner().invoke(app, ["probe"])
+    result = CliRunner().invoke(app, ["probe"], env={"COLUMNS": "200"})
     assert result.exit_code == 0
     assert "ollama" in result.output
+    assert "Latency" in result.output
+    assert "unreachable" in result.output
+    assert "never" in result.output
 
 
 def test_cli_telemetry_command_runs() -> None:
@@ -67,7 +70,16 @@ def _fake_runtime():
 
         async def probe(self, route):
             return HealthProbe(
-                endpoint=route.name, healthy=False, status_code=None, detail="offline"
+                endpoint=route.name,
+                healthy=False,
+                status_code=None,
+                detail="endpoint 'ollama' is unreachable",
+                base_url=route.base_url,
+                health_path=route.health_path,
+                latency_ms=12.5,
+                failure_category=UpstreamFailureCategory.UNREACHABLE,
+                failure_streak=3,
+                last_success_at=None,
             )
 
         async def close(self):

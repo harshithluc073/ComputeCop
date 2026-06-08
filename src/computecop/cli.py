@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 
 import typer
 import uvicorn
@@ -16,6 +17,7 @@ from computecop.dashboard import Dashboard
 from computecop.logging import configure_logging
 from computecop.models import to_jsonable
 from computecop.telemetry import PsutilTelemetrySampler
+from computecop.upstream import HealthProbe
 
 app = typer.Typer(
     name="computecop",
@@ -102,6 +104,9 @@ def probe() -> None:
         table.add_column("Endpoint")
         table.add_column("Healthy")
         table.add_column("Status")
+        table.add_column("Latency")
+        table.add_column("Failures")
+        table.add_column("Last OK")
         table.add_column("Detail")
         try:
             for route in runtime.upstream.routes.values():
@@ -109,7 +114,10 @@ def probe() -> None:
                 table.add_row(
                     result.endpoint,
                     "yes" if result.healthy else "no",
-                    str(result.status_code or "-"),
+                    _probe_status(result),
+                    _probe_latency(result.latency_ms),
+                    str(result.failure_streak),
+                    _probe_last_success(result.last_success_at),
                     result.detail,
                 )
         finally:
@@ -117,6 +125,22 @@ def probe() -> None:
         Console().print(table)
 
     asyncio.run(_probe())
+
+
+def _probe_status(result: HealthProbe) -> str:
+    if result.status_code is not None:
+        return str(result.status_code)
+    if result.failure_category is not None:
+        return result.failure_category.value
+    return "-"
+
+
+def _probe_latency(latency_ms: float | None) -> str:
+    return f"{latency_ms:.0f}ms" if latency_ms is not None else "-"
+
+
+def _probe_last_success(last_success_at: datetime | None) -> str:
+    return last_success_at.strftime("%H:%M:%S") if last_success_at is not None else "never"
 
 
 def _load_or_exit():
