@@ -183,12 +183,59 @@ RAM thresholds, pressure rules, and penalties used by the policy engine.
 
 ## Configuration
 
-ComputeCop works with defaults, then accepts environment overrides.
+ComputeCop loads settings in this order:
+
+1. Built-in defaults
+2. TOML configuration file
+3. Environment variables
+4. CLI flags such as `--host`, `--port`, and `--log-level`
+
+Use a TOML file for durable local settings and keep environment variables for
+temporary overrides in automation.
+
+### TOML Configuration File
+
+Point ComputeCop at a config file with `COMPUTECOP_CONFIG` or `--config`:
+
+```bash
+export COMPUTECOP_CONFIG=examples/computecop.toml
+computecop run
+```
+
+```bash
+computecop --config examples/computecop.toml run
+```
+
+Example file:
+
+```toml
+[server]
+host = "127.0.0.1"
+port = 8765
+
+[policy]
+minimum_supported_ram_gb = 6.0
+ram_yield_percent = 85.0
+
+[[endpoints]]
+name = "ollama"
+kind = "ollama"
+base_url = "http://127.0.0.1:11434"
+health_path = "/api/tags"
+```
+
+Inspect where each effective value came from:
+
+```bash
+computecop config explain
+computecop config explain --json
+```
 
 ### Common Settings
 
 | Variable | Default | Description |
 | --- | --- | --- |
+| `COMPUTECOP_CONFIG` | unset | Path to a TOML configuration file. |
 | `COMPUTECOP_HOST` | `127.0.0.1` | Proxy bind host. |
 | `COMPUTECOP_PORT` | `8765` | Proxy bind port. |
 | `COMPUTECOP_EXPOSE_REMOTE` | `false` | Required for non-local bind addresses. |

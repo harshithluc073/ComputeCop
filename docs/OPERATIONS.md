@@ -101,6 +101,21 @@ When the dynamic yield threshold is crossed, ComputeCop:
 The recovery threshold is also dynamic and stays below the yield threshold by
 the configured hysteresis gap, preventing rapid state flapping.
 
+## Configuration Precedence
+
+ComputeCop resolves settings in this order:
+
+1. Built-in defaults
+2. TOML configuration file from `COMPUTECOP_CONFIG` or `--config`
+3. Environment variables
+4. CLI overrides on `computecop run`
+
+Use `computecop config` to print the effective runtime configuration and
+`computecop config explain` to see each value with its source. Add `--json` to
+`config explain` for support-friendly machine output.
+
+Example TOML file: `examples/computecop.toml`.
+
 ## Endpoint Configuration
 
 Default endpoints are:
@@ -154,6 +169,8 @@ points at a slow or overloaded model.
 computecop run
 computecop dashboard
 computecop config
+computecop config explain
+computecop config explain --json
 computecop telemetry
 computecop probe
 ```
