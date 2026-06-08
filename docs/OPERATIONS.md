@@ -79,6 +79,37 @@ throttled and executed through the bounded async queue. Foreground prompts still
 skip that queue. If the queue is full or the queued request expires, ComputeCop
 returns an explicit retryable error response with the original correlation ID.
 
+## Queue Lifecycle
+
+The background request queue exposes a lifecycle state through `GET /state`:
+
+| State | Meaning |
+| --- | --- | --- |
+| `accepting` | Background work may enter the queue. |
+| `paused` | New background work is rejected; queued work continues. |
+| `draining` | New background work is rejected while existing queued work finishes. |
+| `closed` | The queue is shut down and pending work is cancelled. |
+
+`/state` also reports per-worker status for each background worker:
+
+- worker ID
+- worker state: `idle`, `running`, `failed`, `stopping`, or `stopped`
+- active correlation ID while a worker is executing safe queue metadata
+
+The Rich dashboard includes a Queue Workers panel with the same information.
+
+## Graceful Shutdown
+
+ComputeCop drains the background queue before closing during normal shutdown.
+The drain window is controlled by `queue.shutdown_drain_seconds` in TOML or the
+built-in default of five seconds. During drain, the queue enters the `draining`
+state, rejects new background submissions, and waits for in-flight queued work
+to finish before closing workers and upstream HTTP clients.
+
+Shutdown is idempotent: repeated stop requests, duplicate upstream closes, and
+repeated Ctrl+C handling do not raise tracebacks or double-close clients. The
+terminal dashboard uses the same shutdown coordinator as the proxy lifespan.
+
 ## Dynamic RAM Yield
 
 ComputeCop derives RAM yield and recovery thresholds from total host memory.

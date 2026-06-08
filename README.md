@@ -157,7 +157,8 @@ The dashboard displays:
 - thermal state when available
 - global `juice_level`
 - yield state
-- queue counters
+- queue counters and lifecycle state
+- per-worker queue status and active correlation IDs
 - recent admission decisions
 - policy explanation traces
 - heavy local developer processes
