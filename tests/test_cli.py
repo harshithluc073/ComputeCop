@@ -19,14 +19,14 @@ def test_cli_help_imports() -> None:
 
 
 def test_cli_config_prints_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("computecop.cli.load_config", lambda: _config(tmp_path))
+    monkeypatch.setattr("computecop.cli.load_config", lambda **_: _config(tmp_path))
     result = CliRunner().invoke(app, ["config"])
     assert result.exit_code == 0
     assert '"server"' in result.output
 
 
 def test_cli_probe_prints_table(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("computecop.cli.load_config", lambda: _config(tmp_path))
+    monkeypatch.setattr("computecop.cli.load_config", lambda **_: _config(tmp_path))
     monkeypatch.setattr("computecop.cli.build_runtime", lambda config: _fake_runtime())
     result = CliRunner().invoke(app, ["probe"], env={"COLUMNS": "200"})
     assert result.exit_code == 0

@@ -1,0 +1,31 @@
+# Example ComputeCop configuration file.
+# Load with COMPUTECOP_CONFIG=examples/computecop.toml or --config examples/computecop.toml
+
+[server]
+host = "127.0.0.1"
+port = 8765
+expose_remote = false
+
+[policy]
+minimum_supported_ram_gb = 6.0
+ram_yield_percent = 85.0
+ram_recover_percent = 78.0
+
+[queue]
+max_size = 128
+
+[[endpoints]]
+name = "ollama"
+kind = "ollama"
+base_url = "http://127.0.0.1:11434"
+health_path = "/api/tags"
+timeout_seconds = 180
+supports_streaming = true
+
+[[endpoints]]
+name = "llama-cpp"
+kind = "llama_cpp"
+base_url = "http://127.0.0.1:8080"
+health_path = "/health"
+timeout_seconds = 180
+supports_streaming = true

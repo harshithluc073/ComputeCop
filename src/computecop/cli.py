@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 import typer
 import uvicorn
@@ -24,24 +26,50 @@ app = typer.Typer(
     help="Local inference traffic controller with telemetry-aware compute budgeting.",
     no_args_is_help=True,
 )
+class CliContext:
+    """Shared CLI state for config path resolution."""
+
+    def __init__(self, config_path: Path | None = None) -> None:
+        self.config_path = config_path
 
 
 @app.callback()
-def main() -> None:
+def main(
+    ctx: typer.Context,
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        help="Path to a TOML configuration file.",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+    ),
+) -> None:
     """Run ComputeCop commands."""
+
+    ctx.ensure_object(dict)
+    ctx.obj["cli"] = CliContext(config_path=config)
+
+
+@app.command("config")
+def print_config(ctx: typer.Context) -> None:
+    """Print the effective runtime configuration."""
+
+    config = _load_or_exit(ctx)
+    Console().print_json(json.dumps(to_jsonable(config)))
 
 
 @app.command()
 def run(
+    ctx: typer.Context,
     host: str | None = typer.Option(None, help="Host to bind."),
     port: int | None = typer.Option(None, min=1, max=65535, help="Port to bind."),
     log_level: str | None = typer.Option(None, help="Logging level."),
 ) -> None:
     """Run the ComputeCop proxy server."""
 
-    config = _load_or_exit()
-    if log_level:
-        config.log_level = log_level.upper()
+    cli_overrides = _cli_overrides(host=host, port=port, log_level=log_level)
+    config = _load_or_exit(ctx, cli_overrides=cli_overrides)
     configure_logging(config.log_level)
     bind_host = host or config.server.host
     bind_port = port or config.server.port
@@ -53,10 +81,10 @@ def run(
 
 
 @app.command()
-def dashboard() -> None:
+def dashboard(ctx: typer.Context) -> None:
     """Run the live terminal dashboard."""
 
-    config = _load_or_exit()
+    config = _load_or_exit(ctx)
     configure_logging(config.log_level, rich=True)
     runtime = build_runtime(config)
 
@@ -73,14 +101,6 @@ def dashboard() -> None:
         Console().print("[yellow]ComputeCop dashboard stopped[/yellow]")
 
 
-@app.command("config")
-def print_config() -> None:
-    """Print the effective runtime configuration."""
-
-    config = _load_or_exit()
-    Console().print_json(json.dumps(to_jsonable(config)))
-
-
 @app.command()
 def telemetry() -> None:
     """Print a one-shot telemetry sample."""
@@ -93,10 +113,10 @@ def telemetry() -> None:
 
 
 @app.command()
-def probe() -> None:
+def probe(ctx: typer.Context) -> None:
     """Probe configured upstream inference endpoints."""
 
-    config = _load_or_exit()
+    config = _load_or_exit(ctx)
     runtime = build_runtime(config)
 
     async def _probe() -> None:
@@ -143,8 +163,36 @@ def _probe_last_success(last_success_at: datetime | None) -> str:
     return last_success_at.strftime("%H:%M:%S") if last_success_at is not None else "never"
 
 
-def _load_or_exit():
+def _cli_context(ctx: typer.Context) -> CliContext:
+    ctx.ensure_object(dict)
+    cli = ctx.obj.get("cli")
+    return cli if isinstance(cli, CliContext) else CliContext()
+
+
+def _load_or_exit(ctx: typer.Context, *, cli_overrides: dict[str, Any] | None = None):
     try:
-        return load_config()
+        return load_config(
+            config_path=_cli_context(ctx).config_path,
+            cli_overrides=cli_overrides,
+        )
     except ConfigError as exc:
         raise typer.BadParameter(str(exc)) from exc
+
+
+def _cli_overrides(
+    *,
+    host: str | None,
+    port: int | None,
+    log_level: str | None,
+) -> dict[str, Any] | None:
+    overrides: dict[str, Any] = {}
+    server: dict[str, Any] = {}
+    if host is not None:
+        server["host"] = host
+    if port is not None:
+        server["port"] = port
+    if server:
+        overrides["server"] = server
+    if log_level is not None:
+        overrides["log_level"] = log_level.upper()
+    return overrides or None

@@ -4,17 +4,31 @@ from __future__ import annotations
 
 import json
 import os
+import tomllib
+from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from computecop.models import EndpointKind, EndpointRoute
+from computecop.models import EndpointKind, EndpointRoute, to_jsonable
+
+CONFIG_ENV_VAR = "COMPUTECOP_CONFIG"
 
 
 class ConfigError(RuntimeError):
     """Raised when ComputeCop configuration is invalid."""
+
+
+class ConfigSource(str, Enum):
+    """Origin of an effective configuration value."""
+
+    DEFAULT = "default"
+    TOML = "toml"
+    ENVIRONMENT = "environment"
+    CLI = "cli"
 
 
 class EndpointConfig(BaseModel):
@@ -152,8 +166,173 @@ class RuntimeConfig(BaseModel):
         raise ConfigError(f"unknown endpoint '{name}', configured endpoints: {known}")
 
 
-def _json_env(name: str) -> dict[str, Any] | list[Any] | None:
-    raw = os.getenv(name)
+@dataclass(slots=True)
+class EffectiveConfig:
+    """Runtime configuration with per-field source metadata."""
+
+    config: RuntimeConfig
+    sources: dict[str, ConfigSource]
+    config_path: Path | None = None
+
+    def explain_entries(self) -> list[dict[str, Any]]:
+        """Return flattened config values with their effective sources."""
+
+        payload = to_jsonable(self.config)
+        entries: list[dict[str, Any]] = []
+        for path in sorted(_leaf_paths(payload)):
+            entries.append(
+                {
+                    "path": path,
+                    "value": _value_at_path(payload, path),
+                    "source": self.sources.get(path, ConfigSource.DEFAULT).value,
+                }
+            )
+        return entries
+
+    def explain_document(self) -> dict[str, Any]:
+        """Return a JSON-safe config explanation document."""
+
+        return {
+            "config_path": str(self.config_path) if self.config_path is not None else None,
+            "entries": self.explain_entries(),
+        }
+
+
+def resolve_config_path(
+    config_path: str | Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> Path | None:
+    """Resolve an optional TOML config file path."""
+
+    env = environ or os.environ
+    if config_path is not None:
+        path = Path(config_path).expanduser()
+        if not path.is_file():
+            raise ConfigError(f"config file not found: {path}")
+        return path
+
+    raw = env.get(CONFIG_ENV_VAR)
+    if raw is None or raw.strip() == "":
+        return None
+
+    path = Path(raw).expanduser()
+    if not path.is_file():
+        raise ConfigError(f"{CONFIG_ENV_VAR} points to missing file: {path}")
+    return path
+
+
+def load_effective_config(
+    *,
+    config_path: str | Path | None = None,
+    cli_overrides: Mapping[str, Any] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> EffectiveConfig:
+    """Load configuration with deterministic precedence and source metadata."""
+
+    env = environ or os.environ
+    resolved_path = resolve_config_path(config_path, environ=env)
+    data = _default_config_data()
+    sources = {path: ConfigSource.DEFAULT for path in _leaf_paths(data)}
+
+    if resolved_path is not None:
+        toml_overlay = _load_toml_config(resolved_path)
+        data = _deep_merge(data, toml_overlay)
+        for path in _leaf_paths(toml_overlay):
+            sources[path] = ConfigSource.TOML
+
+    env_overlay = _env_config_overlay(env)
+    if env_overlay:
+        data = _deep_merge(data, env_overlay)
+        for path in _leaf_paths(env_overlay):
+            sources[path] = ConfigSource.ENVIRONMENT
+
+    if cli_overrides:
+        cli_overlay = dict(cli_overrides)
+        data = _deep_merge(data, cli_overlay)
+        for path in _leaf_paths(cli_overlay):
+            sources[path] = ConfigSource.CLI
+
+    try:
+        config = RuntimeConfig.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError(str(exc)) from exc
+
+    return EffectiveConfig(config=config, sources=sources, config_path=resolved_path)
+
+
+def load_config(
+    *,
+    config_path: str | Path | None = None,
+    cli_overrides: Mapping[str, Any] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> RuntimeConfig:
+    """Load ComputeCop configuration from defaults, TOML, env, and CLI overrides."""
+
+    return load_effective_config(
+        config_path=config_path,
+        cli_overrides=cli_overrides,
+        environ=environ,
+    ).config
+
+
+@lru_cache(maxsize=1)
+def cached_config() -> RuntimeConfig:
+    """Return a cached runtime config for dependency injection."""
+
+    return load_config()
+
+
+def _default_config_data() -> dict[str, Any]:
+    return RuntimeConfig().model_dump(mode="json")
+
+
+def _load_toml_config(path: Path) -> dict[str, Any]:
+    with path.open("rb") as handle:
+        try:
+            data = tomllib.load(handle)
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"invalid TOML in {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"config file must contain a TOML table: {path}")
+    return data
+
+
+def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overlay.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _leaf_paths(data: Any, prefix: str = "") -> set[str]:
+    if isinstance(data, dict):
+        paths: set[str] = set()
+        for key, value in data.items():
+            child = f"{prefix}.{key}" if prefix else str(key)
+            if isinstance(value, dict) and value:
+                paths.update(_leaf_paths(value, child))
+            else:
+                paths.add(child)
+        return paths
+    return {prefix} if prefix else set()
+
+
+def _value_at_path(data: Any, path: str) -> Any:
+    current = data
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _json_env(name: str, environ: Mapping[str, str]) -> dict[str, Any] | list[Any] | None:
+    raw = environ.get(name)
     if raw is None or raw.strip() == "":
         return None
     try:
@@ -165,77 +344,96 @@ def _json_env(name: str) -> dict[str, Any] | list[Any] | None:
     return parsed
 
 
-def _float_env(name: str, default: float) -> float:
-    raw = os.getenv(name)
+def _optional_str_env(name: str, environ: Mapping[str, str]) -> str | None:
+    raw = environ.get(name)
     if raw is None or raw.strip() == "":
-        return default
+        return None
+    return raw.strip()
+
+
+def _optional_float_env(name: str, environ: Mapping[str, str]) -> float | None:
+    raw = environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
     try:
         return float(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} must be a float") from exc
 
 
-def _int_env(name: str, default: int) -> int:
-    raw = os.getenv(name)
+def _optional_int_env(name: str, environ: Mapping[str, str]) -> int | None:
+    raw = environ.get(name)
     if raw is None or raw.strip() == "":
-        return default
+        return None
     try:
         return int(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} must be an integer") from exc
 
 
-def _str_env(name: str, default: str) -> str:
-    raw = os.getenv(name)
-    return default if raw is None or raw.strip() == "" else raw.strip()
+def _optional_bool_env(name: str, environ: Mapping[str, str]) -> bool | None:
+    raw = environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def load_config() -> RuntimeConfig:
-    """Load ComputeCop configuration from defaults and environment variables."""
+def _env_config_overlay(environ: Mapping[str, str]) -> dict[str, Any]:
+    overlay: dict[str, Any] = {}
 
-    endpoint_data = _json_env("COMPUTECOP_ENDPOINTS")
-    if endpoint_data is not None and not isinstance(endpoint_data, list):
-        raise ConfigError("COMPUTECOP_ENDPOINTS must be a JSON list")
+    server: dict[str, Any] = {}
+    if (host := _optional_str_env("COMPUTECOP_HOST", environ)) is not None:
+        server["host"] = host
+    if (port := _optional_int_env("COMPUTECOP_PORT", environ)) is not None:
+        server["port"] = port
+    if (expose_remote := _optional_bool_env("COMPUTECOP_EXPOSE_REMOTE", environ)) is not None:
+        server["expose_remote"] = expose_remote
+    if server:
+        overlay["server"] = server
 
-    event_log = os.getenv("COMPUTECOP_EVENT_LOG")
-    data: dict[str, Any] = {
-        "server": {
-            "host": _str_env("COMPUTECOP_HOST", "127.0.0.1"),
-            "port": _int_env("COMPUTECOP_PORT", 8765),
-            "expose_remote": _str_env("COMPUTECOP_EXPOSE_REMOTE", "false").lower()
-            in {"1", "true", "yes", "on"},
-        },
-        "telemetry": {
-            "interval_seconds": _float_env("COMPUTECOP_TELEMETRY_INTERVAL", 1.0),
-            "smoothing_window": _int_env("COMPUTECOP_SMOOTHING_WINDOW", 5),
-            "heavy_process_limit": _int_env("COMPUTECOP_HEAVY_PROCESS_LIMIT", 12),
-        },
-        "policy": {
-            "ram_yield_percent": _float_env("COMPUTECOP_RAM_YIELD_PERCENT", 85.0),
-            "ram_recover_percent": _float_env("COMPUTECOP_RAM_RECOVER_PERCENT", 78.0),
-            "ram_recover_gap_percent": _float_env("COMPUTECOP_RAM_RECOVER_GAP_PERCENT", 7.0),
-            "minimum_supported_ram_gb": _float_env("COMPUTECOP_MIN_RAM_GB", 6.0),
-            "cpu_pressure_percent": _float_env("COMPUTECOP_CPU_PRESSURE_PERCENT", 88.0),
-            "swap_pressure_percent": _float_env("COMPUTECOP_SWAP_PRESSURE_PERCENT", 30.0),
-        },
-        "queue": {
-            "max_size": _int_env("COMPUTECOP_QUEUE_MAX_SIZE", 128),
-            "default_timeout_seconds": _float_env("COMPUTECOP_QUEUE_TIMEOUT", 900.0),
-        },
-        "log_level": _str_env("COMPUTECOP_LOG_LEVEL", "INFO"),
-        "event_log_path": Path(event_log).expanduser() if event_log else None,
+    telemetry: dict[str, Any] = {}
+    if (interval := _optional_float_env("COMPUTECOP_TELEMETRY_INTERVAL", environ)) is not None:
+        telemetry["interval_seconds"] = interval
+    if (smoothing := _optional_int_env("COMPUTECOP_SMOOTHING_WINDOW", environ)) is not None:
+        telemetry["smoothing_window"] = smoothing
+    if (heavy_limit := _optional_int_env("COMPUTECOP_HEAVY_PROCESS_LIMIT", environ)) is not None:
+        telemetry["heavy_process_limit"] = heavy_limit
+    if telemetry:
+        overlay["telemetry"] = telemetry
+
+    policy: dict[str, Any] = {}
+    policy_fields = {
+        "ram_yield_percent": "COMPUTECOP_RAM_YIELD_PERCENT",
+        "ram_recover_percent": "COMPUTECOP_RAM_RECOVER_PERCENT",
+        "ram_recover_gap_percent": "COMPUTECOP_RAM_RECOVER_GAP_PERCENT",
+        "minimum_supported_ram_gb": "COMPUTECOP_MIN_RAM_GB",
+        "cpu_pressure_percent": "COMPUTECOP_CPU_PRESSURE_PERCENT",
+        "swap_pressure_percent": "COMPUTECOP_SWAP_PRESSURE_PERCENT",
     }
+    for field_name, env_name in policy_fields.items():
+        if (value := _optional_float_env(env_name, environ)) is not None:
+            policy[field_name] = value
+    if policy:
+        overlay["policy"] = policy
+
+    queue: dict[str, Any] = {}
+    if (max_size := _optional_int_env("COMPUTECOP_QUEUE_MAX_SIZE", environ)) is not None:
+        queue["max_size"] = max_size
+    if (timeout := _optional_float_env("COMPUTECOP_QUEUE_TIMEOUT", environ)) is not None:
+        queue["default_timeout_seconds"] = timeout
+    if queue:
+        overlay["queue"] = queue
+
+    if (log_level := _optional_str_env("COMPUTECOP_LOG_LEVEL", environ)) is not None:
+        overlay["log_level"] = log_level
+
+    if (event_log := _optional_str_env("COMPUTECOP_EVENT_LOG", environ)) is not None:
+        overlay["event_log_path"] = str(Path(event_log).expanduser())
+
+    endpoint_data = _json_env("COMPUTECOP_ENDPOINTS", environ)
     if endpoint_data is not None:
-        data["endpoints"] = endpoint_data
+        if not isinstance(endpoint_data, list):
+            raise ConfigError("COMPUTECOP_ENDPOINTS must be a JSON list")
+        overlay["endpoints"] = endpoint_data
 
-    try:
-        return RuntimeConfig.model_validate(data)
-    except ValidationError as exc:
-        raise ConfigError(str(exc)) from exc
-
-
-@lru_cache(maxsize=1)
-def cached_config() -> RuntimeConfig:
-    """Return a cached runtime config for dependency injection."""
-
-    return load_config()
+    return overlay
