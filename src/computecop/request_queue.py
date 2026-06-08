@@ -266,9 +266,7 @@ class AsyncRequestQueue:
     def snapshot(self) -> QueueSnapshot:
         """Return the current queue snapshot."""
 
-        workers = tuple(
-            sorted(self._worker_states.values(), key=lambda worker: worker.worker_id)
-        )
+        workers = tuple(sorted(self._worker_states.values(), key=lambda worker: worker.worker_id))
         return QueueSnapshot(
             lifecycle_state=self._lifecycle_state,
             queued=len(self._heap),
@@ -289,10 +287,10 @@ class AsyncRequestQueue:
         if self._lifecycle_state == QueueLifecycleState.CLOSED:
             self._rejected += 1
             return QueueFullError("request queue is closed")
-        if (
-            self._lifecycle_state in {QueueLifecycleState.PAUSED, QueueLifecycleState.DRAINING}
-            and _is_background_priority(metadata.priority)
-        ):
+        if self._lifecycle_state in {
+            QueueLifecycleState.PAUSED,
+            QueueLifecycleState.DRAINING,
+        } and _is_background_priority(metadata.priority):
             self._rejected += 1
             return QueueFullError("request queue is not accepting background work")
         return None

@@ -231,9 +231,7 @@ async def test_runtime_stop_drains_then_closes_queue() -> None:
         await gate.wait()
         return "ok"
 
-    submit_task = asyncio.create_task(
-        runtime.queue.submit(_background_metadata(), gated_runner)
-    )
+    submit_task = asyncio.create_task(runtime.queue.submit(_background_metadata(), gated_runner))
     await asyncio.sleep(0)
     gate.set()
     await submit_task

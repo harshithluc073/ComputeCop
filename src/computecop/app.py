@@ -345,9 +345,7 @@ async def _handle_inference_request(
         except QueueFullError as exc:
             status_code = 429 if "full" in str(exc) else 503
             error_type = (
-                "computecop_queue_full"
-                if status_code == 429
-                else "computecop_queue_unavailable"
+                "computecop_queue_full" if status_code == 429 else "computecop_queue_unavailable"
             )
             return error_response(
                 status_code=status_code,
