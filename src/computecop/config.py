@@ -111,6 +111,7 @@ class QueueConfig(BaseModel):
     max_size: int = Field(default=128, ge=1, le=10000)
     default_timeout_seconds: float = Field(default=900.0, ge=1.0, le=86400.0)
     background_retry_after_seconds: float = Field(default=3.0, ge=0.1, le=3600.0)
+    shutdown_drain_seconds: float = Field(default=5.0, ge=0.0, le=300.0)
 
 
 class ServerConfig(BaseModel):

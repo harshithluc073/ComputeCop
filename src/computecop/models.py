@@ -63,6 +63,25 @@ class DecisionType(str, Enum):
     YIELD = "yield"
 
 
+class QueueLifecycleState(str, Enum):
+    """Lifecycle state for the background request queue."""
+
+    ACCEPTING = "accepting"
+    PAUSED = "paused"
+    DRAINING = "draining"
+    CLOSED = "closed"
+
+
+class WorkerState(str, Enum):
+    """Observed state for a queue worker task."""
+
+    IDLE = "idle"
+    RUNNING = "running"
+    FAILED = "failed"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+
+
 class PolicyRuleStatus(str, Enum):
     """Whether a policy rule contributed pressure."""
 

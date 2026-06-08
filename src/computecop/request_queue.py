@@ -12,11 +12,16 @@ from time import monotonic
 from typing import Any, Generic, TypeVar
 
 from computecop.config import QueueConfig
-from computecop.models import RequestMetadata, RequestPriority
-from computecop.state import QueueCounters
+from computecop.models import (
+    QueueLifecycleState,
+    RequestMetadata,
+    RequestPriority,
+    WorkerState,
+)
+from computecop.state import QueueSnapshot, WorkerSnapshot
 
 T = TypeVar("T")
-QueueChangeCallback = Callable[[QueueCounters], Awaitable[None] | None]
+QueueChangeCallback = Callable[[QueueSnapshot], Awaitable[None] | None]
 
 
 class QueueFullError(RuntimeError):
@@ -64,17 +69,69 @@ class AsyncRequestQueue:
         self._condition = asyncio.Condition()
         self._heap: list[_HeapItem[Any]] = []
         self._sequence = itertools.count()
-        self._closed = False
+        self._lifecycle_state = QueueLifecycleState.ACCEPTING
+        self._drain_deadline: float | None = None
         self._running_background = 0
         self._running_foreground = 0
         self._completed = 0
         self._rejected = 0
         self._change_callback: QueueChangeCallback | None = None
+        self._worker_states: dict[str, WorkerSnapshot] = {}
 
     def set_change_callback(self, callback: QueueChangeCallback) -> None:
         """Register a callback invoked when queue counters change."""
 
         self._change_callback = callback
+
+    @property
+    def lifecycle_state(self) -> QueueLifecycleState:
+        return self._lifecycle_state
+
+    def accepts_background_work(self) -> bool:
+        """Return whether new background work may enter the queue."""
+
+        return self._lifecycle_state == QueueLifecycleState.ACCEPTING
+
+    async def pause(self) -> None:
+        """Stop accepting new background work without draining existing items."""
+
+        async with self._condition:
+            if self._lifecycle_state == QueueLifecycleState.CLOSED:
+                return
+            self._lifecycle_state = QueueLifecycleState.PAUSED
+        await self._notify_change()
+
+    async def resume(self) -> None:
+        """Resume accepting background work."""
+
+        async with self._condition:
+            if self._lifecycle_state == QueueLifecycleState.CLOSED:
+                return
+            self._lifecycle_state = QueueLifecycleState.ACCEPTING
+            self._drain_deadline = None
+            self._condition.notify_all()
+        await self._notify_change()
+
+    async def drain(self, deadline: float) -> bool:
+        """Stop accepting background work and wait for queued work to finish."""
+
+        async with self._condition:
+            if self._lifecycle_state == QueueLifecycleState.CLOSED:
+                return True
+            self._lifecycle_state = QueueLifecycleState.DRAINING
+            self._drain_deadline = deadline
+            self._condition.notify_all()
+        await self._notify_change()
+
+        while True:
+            async with self._condition:
+                if self._lifecycle_state == QueueLifecycleState.CLOSED:
+                    return True
+                if not self._heap and self._running_background == 0:
+                    return True
+                if monotonic() >= deadline:
+                    return False
+            await asyncio.sleep(0.05)
 
     async def submit(
         self,
@@ -96,10 +153,8 @@ class AsyncRequestQueue:
         )
         rejection_error: QueueFullError | None = None
         async with self._condition:
-            if self._closed:
-                self._rejected += 1
-                rejection_error = QueueFullError("request queue is closed")
-            else:
+            rejection_error = self._rejection_for_submit_locked(metadata)
+            if rejection_error is None:
                 self._discard_expired_locked()
             if rejection_error is None and len(self._heap) >= self.config.max_size:
                 self._rejected += 1
@@ -131,7 +186,7 @@ class AsyncRequestQueue:
 
         async with self._condition:
             while True:
-                if self._closed and not self._heap:
+                if self._lifecycle_state == QueueLifecycleState.CLOSED and not self._heap:
                     raise QueueFullError("request queue is closed")
                 self._discard_expired_locked()
                 if self._heap:
@@ -148,48 +203,89 @@ class AsyncRequestQueue:
         await self._notify_change()
         return request
 
-    async def run_worker(self) -> None:
+    async def run_worker(self, worker_id: str) -> None:
         """Continuously execute queued work until the queue is closed."""
 
+        await self._set_worker_state(worker_id, WorkerState.IDLE)
         while True:
             try:
+                await self._set_worker_state(worker_id, WorkerState.IDLE)
                 request = await self.get()
             except QueueFullError:
+                await self._set_worker_state(worker_id, WorkerState.STOPPED)
                 return
+            correlation_id = request.metadata.correlation_id
             try:
+                await self._set_worker_state(
+                    worker_id,
+                    WorkerState.RUNNING,
+                    active_correlation_id=correlation_id,
+                )
                 result = await request.runner()
                 if not request.future.done():
                     request.future.set_result(result)
             except Exception as exc:
+                await self._set_worker_state(worker_id, WorkerState.FAILED)
                 if not request.future.done():
                     request.future.set_exception(exc)
             finally:
                 async with self._condition:
                     self._mark_running(request.metadata.priority, delta=-1)
                     self._completed += 1
-                await self._notify_change()
+                await self._set_worker_state(worker_id, WorkerState.IDLE)
 
     async def close(self) -> None:
         """Close the queue and cancel pending work."""
 
         async with self._condition:
-            self._closed = True
+            self._lifecycle_state = QueueLifecycleState.CLOSED
+            self._drain_deadline = None
             for item in self._heap:
                 item.request.cancel()
             self._heap.clear()
+            for worker_id, snapshot in list(self._worker_states.items()):
+                if snapshot.state not in {WorkerState.STOPPED, WorkerState.STOPPING}:
+                    self._worker_states[worker_id] = WorkerSnapshot(
+                        worker_id=worker_id,
+                        state=WorkerState.STOPPING,
+                        active_correlation_id=snapshot.active_correlation_id,
+                    )
             self._condition.notify_all()
         await self._notify_change()
 
-    def counters(self) -> QueueCounters:
-        """Return current queue counters."""
+    def snapshot(self) -> QueueSnapshot:
+        """Return the current queue snapshot."""
 
-        return QueueCounters(
+        workers = tuple(
+            sorted(self._worker_states.values(), key=lambda worker: worker.worker_id)
+        )
+        return QueueSnapshot(
+            lifecycle_state=self._lifecycle_state,
             queued=len(self._heap),
             running_background=self._running_background,
             running_foreground=self._running_foreground,
             rejected=self._rejected,
             completed=self._completed,
+            drain_deadline_monotonic=self._drain_deadline,
+            workers=workers,
         )
+
+    def counters(self) -> QueueSnapshot:
+        """Return current queue counters."""
+
+        return self.snapshot()
+
+    def _rejection_for_submit_locked(self, metadata: RequestMetadata) -> QueueFullError | None:
+        if self._lifecycle_state == QueueLifecycleState.CLOSED:
+            self._rejected += 1
+            return QueueFullError("request queue is closed")
+        if (
+            self._lifecycle_state in {QueueLifecycleState.PAUSED, QueueLifecycleState.DRAINING}
+            and _is_background_priority(metadata.priority)
+        ):
+            self._rejected += 1
+            return QueueFullError("request queue is not accepting background work")
+        return None
 
     def _discard_expired_locked(self) -> None:
         kept: list[_HeapItem[Any]] = []
@@ -215,11 +311,26 @@ class AsyncRequestQueue:
         else:
             self._running_background = max(0, self._running_background + delta)
 
+    async def _set_worker_state(
+        self,
+        worker_id: str,
+        state: WorkerState,
+        *,
+        active_correlation_id: str | None = None,
+    ) -> None:
+        async with self._condition:
+            self._worker_states[worker_id] = WorkerSnapshot(
+                worker_id=worker_id,
+                state=state,
+                active_correlation_id=active_correlation_id,
+            )
+        await self._notify_change()
+
     async def _notify_change(self) -> None:
         if self._change_callback is None:
             return
         with contextlib.suppress(Exception):
-            result = self._change_callback(self.counters())
+            result = self._change_callback(self.snapshot())
             if result is not None:
                 await result
 
@@ -232,3 +343,7 @@ def _priority_rank(priority: RequestPriority) -> int:
         RequestPriority.BULK: 3,
     }
     return ranks.get(priority, 2)
+
+
+def _is_background_priority(priority: RequestPriority) -> bool:
+    return priority in {RequestPriority.BACKGROUND, RequestPriority.BULK}

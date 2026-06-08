@@ -6,7 +6,8 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from time import monotonic
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -48,6 +49,8 @@ class ComputeCopRuntime:
     offload_manager: OffloadManager
     event_store: JsonlEventStore
     queue_workers: list[asyncio.Task[None]]
+    _stopping: bool = field(default=False, init=False)
+    _stopped: bool = field(default=False, init=False)
 
     async def start(self) -> None:
         """Start background runtime services."""
@@ -55,25 +58,40 @@ class ComputeCopRuntime:
         await self.telemetry_loop.start()
         if not self.queue_workers:
             for index in range(self.config.policy.max_background_concurrency):
+                worker_id = f"computecop-queue-worker-{index}"
                 self.queue_workers.append(
                     asyncio.create_task(
-                        self.queue.run_worker(),
-                        name=f"computecop-queue-worker-{index}",
+                        self.queue.run_worker(worker_id),
+                        name=worker_id,
                     )
                 )
 
-    async def stop(self) -> None:
+    async def stop(self, *, drain_timeout_seconds: float | None = None) -> None:
         """Stop background runtime services."""
 
-        await self.telemetry_loop.stop()
-        await self.queue.close()
-        for worker in self.queue_workers:
-            worker.cancel()
-        for worker in self.queue_workers:
-            with contextlib.suppress(asyncio.CancelledError, RuntimeError):
-                await worker
-        self.queue_workers.clear()
-        await self.upstream.close()
+        if self._stopping or self._stopped:
+            return
+        self._stopping = True
+        try:
+            await self.telemetry_loop.stop()
+            drain_seconds = (
+                self.config.queue.shutdown_drain_seconds
+                if drain_timeout_seconds is None
+                else drain_timeout_seconds
+            )
+            if drain_seconds > 0:
+                await self.queue.drain(monotonic() + drain_seconds)
+            await self.queue.close()
+            for worker in self.queue_workers:
+                worker.cancel()
+            for worker in self.queue_workers:
+                with contextlib.suppress(asyncio.CancelledError, RuntimeError):
+                    await worker
+            self.queue_workers.clear()
+            await self.upstream.close()
+        finally:
+            self._stopped = True
+            self._stopping = False
 
 
 def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
@@ -282,7 +300,7 @@ async def _handle_inference_request(
     decision = runtime.admission.decide(
         metadata,
         pressure,
-        queue_size=runtime.queue.counters().queued,
+        queue_size=runtime.queue.snapshot().queued,
     )
     await runtime.state.record_decision(decision)
     await runtime.event_store.append(
@@ -312,13 +330,28 @@ async def _handle_inference_request(
         decision.decision == DecisionType.THROTTLE
         and metadata.request_class == RequestClass.BACKGROUND_REQUEST
     ):
+        if not runtime.queue.accepts_background_work():
+            queue_state = runtime.queue.lifecycle_state.value
+            return error_response(
+                status_code=503,
+                message=f"background queue is {queue_state} and not accepting work",
+                error_type="computecop_queue_unavailable",
+                correlation_id=metadata.correlation_id,
+                retry_after_seconds=runtime.config.queue.background_retry_after_seconds,
+            )
         try:
             return await runtime.queue.submit(metadata, forward)
-        except QueueFullError:
+        except QueueFullError as exc:
+            status_code = 429 if "full" in str(exc) else 503
+            error_type = (
+                "computecop_queue_full"
+                if status_code == 429
+                else "computecop_queue_unavailable"
+            )
             return error_response(
-                status_code=429,
-                message="background queue is full",
-                error_type="computecop_queue_full",
+                status_code=status_code,
+                message=str(exc),
+                error_type=error_type,
                 correlation_id=metadata.correlation_id,
                 retry_after_seconds=runtime.config.queue.background_retry_after_seconds,
             )

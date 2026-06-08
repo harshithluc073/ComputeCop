@@ -10,21 +10,39 @@ from typing import cast
 from computecop.models import (
     AdmissionDecision,
     DecisionType,
+    QueueLifecycleState,
     SystemState,
     TelemetrySample,
+    WorkerState,
     to_jsonable,
 )
 
 
 @dataclass(frozen=True, slots=True)
-class QueueCounters:
-    """Current queue and worker counters."""
+class WorkerSnapshot:
+    """Observed queue worker state."""
 
+    worker_id: str
+    state: WorkerState
+    active_correlation_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QueueSnapshot:
+    """Current queue counters, lifecycle state, and worker observations."""
+
+    lifecycle_state: QueueLifecycleState = QueueLifecycleState.ACCEPTING
     queued: int = 0
     running_background: int = 0
     running_foreground: int = 0
     rejected: int = 0
     completed: int = 0
+    drain_deadline_monotonic: float | None = None
+    workers: tuple[WorkerSnapshot, ...] = field(default_factory=tuple)
+
+
+# Backwards-compatible alias retained for callers that imported the previous name.
+QueueCounters = QueueSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +54,7 @@ class RuntimeSnapshot:
     global_juice_level: int
     yield_active: bool
     yield_reason: str | None
-    queue: QueueCounters
+    queue: QueueSnapshot
     recent_decisions: tuple[AdmissionDecision, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, object]:
@@ -53,7 +71,7 @@ class RuntimeStateStore:
         self._global_juice_level = 100
         self._yield_active = False
         self._yield_reason: str | None = None
-        self._queue = QueueCounters()
+        self._queue = QueueSnapshot()
         self._recent_decisions: deque[AdmissionDecision] = deque(maxlen=recent_decision_limit)
         self._decision_by_correlation_id: dict[str, AdmissionDecision] = {}
 
@@ -75,7 +93,7 @@ class RuntimeStateStore:
             self._yield_active = yield_active
             self._yield_reason = yield_reason
 
-    async def update_queue(self, queue: QueueCounters) -> None:
+    async def update_queue(self, queue: QueueSnapshot) -> None:
         async with self._lock:
             self._queue = queue
 
@@ -87,12 +105,15 @@ class RuntimeStateStore:
             self._recent_decisions.appendleft(decision)
             self._decision_by_correlation_id[decision.correlation_id] = decision
             if decision.decision == DecisionType.REJECT:
-                self._queue = QueueCounters(
+                self._queue = QueueSnapshot(
+                    lifecycle_state=self._queue.lifecycle_state,
                     queued=self._queue.queued,
                     running_background=self._queue.running_background,
                     running_foreground=self._queue.running_foreground,
                     rejected=self._queue.rejected + 1,
                     completed=self._queue.completed,
+                    drain_deadline_monotonic=self._queue.drain_deadline_monotonic,
+                    workers=self._queue.workers,
                 )
 
     async def decision_for_correlation_id(self, correlation_id: str) -> AdmissionDecision | None:

@@ -132,8 +132,12 @@ class UpstreamRouter:
         self._health: dict[str, _EndpointHealth] = {
             route.name: _EndpointHealth() for route in routes
         }
+        self._closed = False
 
     async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         await self._client.aclose()
 
     def route(self, name: str | None = None) -> EndpointRoute:
