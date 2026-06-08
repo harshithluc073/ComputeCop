@@ -10,10 +10,12 @@ from computecop.models import (
     PolicyRuleEvent,
     PolicyRuleStatus,
     PolicyTrace,
+    QueueLifecycleState,
     RequestClass,
     RequestPriority,
+    WorkerState,
 )
-from computecop.state import RuntimeStateStore
+from computecop.state import QueueSnapshot, RuntimeStateStore, WorkerSnapshot
 
 
 async def test_dashboard_renders_policy_trace_panel() -> None:
@@ -56,3 +58,35 @@ async def test_dashboard_renders_policy_trace_panel() -> None:
     assert "Why" in output
     assert "ram_yield" in output
     assert "RAM pressure crossed yield threshold" in output
+
+
+async def test_dashboard_renders_worker_state_panel() -> None:
+    store = RuntimeStateStore()
+    await store.update_queue(
+        QueueSnapshot(
+            lifecycle_state=QueueLifecycleState.DRAINING,
+            queued=2,
+            running_background=1,
+            workers=(
+                WorkerSnapshot(
+                    worker_id="computecop-queue-worker-0",
+                    state=WorkerState.RUNNING,
+                    active_correlation_id="worker-correlation-id",
+                ),
+                WorkerSnapshot(
+                    worker_id="computecop-queue-worker-1",
+                    state=WorkerState.IDLE,
+                ),
+            ),
+        )
+    )
+
+    renderable = await Dashboard(store).render()
+    console = Console(record=True, width=140)
+    console.print(renderable)
+    output = console.export_text()
+    assert "Queue Workers" in output
+    assert "computecop-queue-worker-0" in output
+    assert "running" in output
+    assert "worker-correlation-id" in output
+    assert "draining" in output

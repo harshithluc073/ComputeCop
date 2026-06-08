@@ -38,6 +38,7 @@ class Dashboard:
             self._header(snapshot),
             self._resource_panel(snapshot.telemetry),
             self._policy_panel(snapshot),
+            self._worker_panel(snapshot),
             self._trace_panel(snapshot),
             self._decision_panel(snapshot),
         )
@@ -94,12 +95,25 @@ class Dashboard:
         table.add_row("System state", snapshot.system_state.value)
         table.add_row("Yield active", str(snapshot.yield_active))
         table.add_row("Yield reason", snapshot.yield_reason or "-")
+        table.add_row("Queue state", snapshot.queue.lifecycle_state.value)
         table.add_row("Queued", str(snapshot.queue.queued))
         table.add_row("Running foreground", str(snapshot.queue.running_foreground))
         table.add_row("Running background", str(snapshot.queue.running_background))
         table.add_row("Completed", str(snapshot.queue.completed))
         table.add_row("Rejected", str(snapshot.queue.rejected))
         return Panel(table, title="Policy", border_style="magenta")
+
+    def _worker_panel(self, snapshot: RuntimeSnapshot) -> Panel:
+        table = Table(expand=True)
+        table.add_column("Worker")
+        table.add_column("State")
+        table.add_column("Correlation")
+        for worker in snapshot.queue.workers:
+            correlation = worker.active_correlation_id or "-"
+            table.add_row(worker.worker_id, worker.state.value, correlation[:24])
+        if not snapshot.queue.workers:
+            table.add_row("-", "none registered", "-")
+        return Panel(table, title="Queue Workers", border_style="green")
 
     def _trace_panel(self, snapshot: RuntimeSnapshot) -> Panel:
         latest = snapshot.recent_decisions[0] if snapshot.recent_decisions else None
