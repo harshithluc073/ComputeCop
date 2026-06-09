@@ -403,6 +403,10 @@ Windows helper:
 .\scripts\verify.ps1
 ```
 
+Maintainers cutting a release should follow the
+[release checklist](docs/RELEASE.md), which documents the version bump process,
+verification gates, supported platforms, and the local-only artifact policy.
+
 ## Contributing
 
 Contributions are welcome.
