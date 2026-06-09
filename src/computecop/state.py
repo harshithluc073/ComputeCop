@@ -28,6 +28,14 @@ class WorkerSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class EventPersistenceSnapshot:
+    """Health of the JSONL event persistence layer."""
+
+    enabled: bool = True
+    disabled_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class QueueSnapshot:
     """Current queue counters, lifecycle state, and worker observations."""
 
@@ -55,6 +63,7 @@ class RuntimeSnapshot:
     yield_active: bool
     yield_reason: str | None
     queue: QueueSnapshot
+    event_persistence: EventPersistenceSnapshot = field(default_factory=EventPersistenceSnapshot)
     recent_decisions: tuple[AdmissionDecision, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, object]:
@@ -72,6 +81,7 @@ class RuntimeStateStore:
         self._yield_active = False
         self._yield_reason: str | None = None
         self._queue = QueueSnapshot()
+        self._event_persistence = EventPersistenceSnapshot()
         self._recent_decisions: deque[AdmissionDecision] = deque(maxlen=recent_decision_limit)
         self._decision_by_correlation_id: dict[str, AdmissionDecision] = {}
 
@@ -96,6 +106,13 @@ class RuntimeStateStore:
     async def update_queue(self, queue: QueueSnapshot) -> None:
         async with self._lock:
             self._queue = queue
+
+    async def set_event_persistence(self, *, enabled: bool, disabled_reason: str | None) -> None:
+        async with self._lock:
+            self._event_persistence = EventPersistenceSnapshot(
+                enabled=enabled,
+                disabled_reason=None if enabled else disabled_reason,
+            )
 
     async def record_decision(self, decision: AdmissionDecision) -> None:
         async with self._lock:
@@ -129,5 +146,6 @@ class RuntimeStateStore:
                 yield_active=self._yield_active,
                 yield_reason=self._yield_reason,
                 queue=self._queue,
+                event_persistence=self._event_persistence,
                 recent_decisions=tuple(self._recent_decisions),
             )

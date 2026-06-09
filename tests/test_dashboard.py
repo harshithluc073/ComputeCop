@@ -15,7 +15,11 @@ from computecop.models import (
     RequestPriority,
     WorkerState,
 )
-from computecop.state import QueueSnapshot, RuntimeStateStore, WorkerSnapshot
+from computecop.state import (
+    QueueSnapshot,
+    RuntimeStateStore,
+    WorkerSnapshot,
+)
 
 
 async def test_dashboard_renders_policy_trace_panel() -> None:
@@ -90,3 +94,28 @@ async def test_dashboard_renders_worker_state_panel() -> None:
     assert "running" in output
     assert "worker-correlation-id" in output
     assert "draining" in output
+
+
+async def test_dashboard_shows_persistence_warning_when_disabled() -> None:
+    store = RuntimeStateStore()
+    await store.set_event_persistence(
+        enabled=False, disabled_reason="Permission denied: /root/events.jsonl"
+    )
+
+    renderable = await Dashboard(store).render()
+    console = Console(record=True, width=140)
+    console.print(renderable)
+    output = console.export_text()
+    assert "Event persistence disabled" in output
+    assert "Permission denied" in output
+
+
+async def test_dashboard_hides_persistence_warning_when_healthy() -> None:
+    store = RuntimeStateStore()
+    await store.set_event_persistence(enabled=True, disabled_reason=None)
+
+    renderable = await Dashboard(store).render()
+    console = Console(record=True, width=140)
+    console.print(renderable)
+    output = console.export_text()
+    assert "Event persistence disabled" not in output

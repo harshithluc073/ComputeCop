@@ -119,6 +119,11 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
     offload_manager = OffloadManager(routes)
     event_store = JsonlEventStore(config.event_log_path)
 
+    async def on_event_persistence_change(enabled: bool, reason: str | None) -> None:
+        await state.set_event_persistence(enabled=enabled, disabled_reason=reason)
+
+    event_store.set_persistence_callback(on_event_persistence_change)
+
     async def offload_hook(reason: str) -> None:
         await offload_manager.offload_all(reason)
 

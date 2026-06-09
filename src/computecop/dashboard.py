@@ -34,14 +34,30 @@ class Dashboard:
 
     async def render(self) -> Group:
         snapshot = await self.state.snapshot()
-        return Group(
+        panels = [
             self._header(snapshot),
             self._resource_panel(snapshot.telemetry),
             self._policy_panel(snapshot),
             self._worker_panel(snapshot),
             self._trace_panel(snapshot),
             self._decision_panel(snapshot),
+        ]
+        warning = self._persistence_warning(snapshot)
+        if warning is not None:
+            panels.insert(1, warning)
+        return Group(*panels)
+
+    def _persistence_warning(self, snapshot: RuntimeSnapshot) -> Panel | None:
+        persistence = snapshot.event_persistence
+        if persistence.enabled:
+            return None
+        reason = persistence.disabled_reason or "unknown error"
+        line = Text.assemble(
+            ("Event persistence disabled", "bold red"),
+            "  ",
+            (reason, "red"),
         )
+        return Panel(line, title="Warning", border_style="red")
 
     def _header(self, snapshot: RuntimeSnapshot) -> Panel:
         title = Text("ComputeCop", style="bold cyan")
