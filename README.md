@@ -162,6 +162,7 @@ The dashboard displays:
 - recent admission decisions
 - policy explanation traces
 - heavy local developer processes
+- a warning panel when event persistence is disabled
 
 ## Decision Explainability
 
@@ -181,6 +182,38 @@ curl http://127.0.0.1:8765/decisions/<correlation-id>
 
 The response includes the request class, final decision, shaped budget, dynamic
 RAM thresholds, pressure rules, and penalties used by the policy engine.
+
+## Event Inspection
+
+ComputeCop records prompt-free runtime events — admission decisions, policy
+yields, and upstream failures — to a bounded JSONL log. Persistence is best
+effort: if the event path becomes unwritable, ComputeCop disables persistence
+and surfaces a dashboard warning instead of crashing.
+
+Inspect recent events without opening the JSONL file by hand:
+
+```bash
+# Show the most recent events (default 20).
+computecop events tail
+computecop events tail --limit 50
+
+# Find every event tied to a correlation or trace ID.
+computecop events find --correlation-id <correlation-or-trace-id>
+
+# Summarize event counts by kind and the observed time range.
+computecop events stats
+```
+
+Every command accepts `--json` for scripting:
+
+```bash
+computecop events tail --json
+computecop events find --correlation-id <id> --json
+computecop events stats --json
+```
+
+The event log location follows `COMPUTECOP_EVENT_LOG`, falling back to the
+per-user cache directory.
 
 ## Configuration
 

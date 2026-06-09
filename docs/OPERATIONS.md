@@ -194,6 +194,52 @@ This makes the command a first-line debugging tool: a high failure streak with
 an `unreachable` category points at a stopped engine, while a `timeout` category
 points at a slow or overloaded model.
 
+## Event Store Reliability
+
+ComputeCop persists prompt-free runtime events — `admission.decision`,
+`policy.yield`, and `upstream.failure` — to a bounded JSONL log. The store is an
+audit trail for recent throttling and yield behavior.
+
+Persistence is hardened for unattended operation:
+
+- **Durable appends.** Each event is appended and then flushed and `fsync`-ed
+  before the write returns, so a recorded event survives an abrupt process exit.
+- **Bounded retention.** The log is trimmed to its retention limit so it cannot
+  grow without bound.
+- **Graceful degradation.** If the configured event path cannot be created or
+  written — for example a permission failure or a path that collides with an
+  existing file — ComputeCop disables persistence, records the failure reason,
+  and keeps serving traffic instead of crashing. Subsequent appends are silent
+  no-ops until the process restarts.
+- **Operator visibility.** When persistence is disabled, the dashboard renders a
+  red warning panel showing the reason, and the runtime `/state` snapshot exposes
+  an `event_persistence` object with `enabled` and `disabled_reason` fields.
+
+Set the log location with `COMPUTECOP_EVENT_LOG`; it defaults to the per-user
+cache directory.
+
+## Event Query Commands
+
+Diagnose recent runtime behavior without manually opening JSONL files:
+
+```powershell
+computecop events tail
+computecop events tail --limit 50
+computecop events find --correlation-id <correlation-or-trace-id>
+computecop events stats
+```
+
+- `events tail` prints the most recent events (default 20, `--limit`/`-n` to
+  adjust).
+- `events find` returns every event that references the given correlation or
+  trace ID, including IDs nested inside event payloads such as the
+  `admission.decision` payload's `decision.correlation_id`.
+- `events stats` aggregates event counts by kind and reports the earliest and
+  latest recorded timestamps.
+
+Every event command accepts `--json` for machine-readable output suitable for
+piping into other tools.
+
 ## Commands
 
 ```powershell
@@ -204,6 +250,9 @@ computecop config explain
 computecop config explain --json
 computecop telemetry
 computecop probe
+computecop events tail
+computecop events find --correlation-id <id>
+computecop events stats
 ```
 
 The proxy binds to `127.0.0.1:8765` by default. Binding to a non-local address
