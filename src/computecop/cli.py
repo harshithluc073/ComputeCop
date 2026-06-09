@@ -16,6 +16,11 @@ from rich.table import Table
 from computecop.app import build_runtime, create_app
 from computecop.config import ConfigError, EffectiveConfig, load_config, load_effective_config
 from computecop.dashboard import Dashboard
+from computecop.events import (
+    JsonlEventStore,
+    event_matches_correlation,
+    summarize_events,
+)
 from computecop.logging import configure_logging
 from computecop.models import to_jsonable
 from computecop.shutdown import ShutdownCoordinator, cancel_task
@@ -29,6 +34,8 @@ app = typer.Typer(
 )
 config_app = typer.Typer(help="Inspect effective ComputeCop configuration.")
 app.add_typer(config_app, name="config")
+events_app = typer.Typer(help="Inspect persisted ComputeCop runtime events.")
+app.add_typer(events_app, name="events")
 
 
 class CliContext:
@@ -93,6 +100,81 @@ def explain_config(
     Console().print(table)
     if effective.config_path is not None:
         Console().print(f"[dim]Config file: {effective.config_path}[/dim]")
+
+
+@events_app.command("tail")
+def events_tail(
+    ctx: typer.Context,
+    limit: int = typer.Option(
+        20, "--limit", "-n", min=1, max=1000, help="Number of recent events to show."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit events as JSON."),
+) -> None:
+    """Show the most recent persisted runtime events."""
+
+    store = _event_store(ctx)
+    events = list(asyncio.run(store.tail(limit=limit)))
+    if json_output:
+        Console().print_json(json.dumps({"events": events}))
+        return
+    _print_events_table(events, title=f"Recent Events ({len(events)})")
+
+
+@events_app.command("find")
+def events_find(
+    ctx: typer.Context,
+    correlation_id: Annotated[
+        str,
+        typer.Option("--correlation-id", help="Correlation or trace ID to match."),
+    ],
+    limit: int = typer.Option(
+        100, "--limit", "-n", min=1, max=1000, help="Maximum matching events to show."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit matching events as JSON."),
+) -> None:
+    """Find persisted events by correlation or trace ID."""
+
+    store = _event_store(ctx)
+    events = asyncio.run(store.read_events())
+    matched = [event for event in events if event_matches_correlation(event, correlation_id)]
+    matched = matched[-limit:]
+    if json_output:
+        Console().print_json(json.dumps({"correlation_id": correlation_id, "events": matched}))
+        return
+    if not matched:
+        Console().print(f"[yellow]no events found for correlation id '{correlation_id}'[/yellow]")
+        return
+    _print_events_table(matched, title=f"Events for {correlation_id} ({len(matched)})")
+
+
+@events_app.command("stats")
+def events_stats(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json", help="Emit statistics as JSON."),
+) -> None:
+    """Summarize persisted runtime events by kind and time range."""
+
+    store = _event_store(ctx)
+    events = asyncio.run(store.read_events())
+    stats = summarize_events(events)
+    if json_output:
+        Console().print_json(json.dumps(stats))
+        return
+    table = Table(title="ComputeCop Event Statistics")
+    table.add_column("Kind")
+    table.add_column("Count", justify="right")
+    by_kind: dict[str, int] = stats["by_kind"]
+    for kind, count in by_kind.items():
+        table.add_row(kind, str(count))
+    if not by_kind:
+        table.add_row("none", "0")
+    console = Console()
+    console.print(table)
+    console.print(
+        f"total={stats['total']} "
+        f"earliest={stats['earliest'] or '-'} "
+        f"latest={stats['latest'] or '-'}"
+    )
 
 
 @app.command()
@@ -216,6 +298,34 @@ def _cli_context(ctx: typer.Context) -> CliContext:
     ctx.ensure_object(dict)
     cli = ctx.obj.get("cli")
     return cli if isinstance(cli, CliContext) else CliContext()
+
+
+def _event_store(ctx: typer.Context) -> JsonlEventStore:
+    return JsonlEventStore(_load_or_exit(ctx).event_log_path)
+
+
+def _print_events_table(events: list[dict[str, Any]], *, title: str) -> None:
+    table = Table(title=title)
+    table.add_column("Time")
+    table.add_column("Kind")
+    table.add_column("Detail")
+    for event in events:
+        table.add_row(_event_time(event), str(event.get("kind", "-")), _event_detail(event))
+    if not events:
+        table.add_row("-", "none", "no events recorded")
+    Console().print(table)
+
+
+def _event_time(event: dict[str, Any]) -> str:
+    timestamp = event.get("timestamp")
+    return str(timestamp) if timestamp else "-"
+
+
+def _event_detail(event: dict[str, Any]) -> str:
+    payload = event.get("payload")
+    if isinstance(payload, dict) and payload:
+        return json.dumps(payload, separators=(",", ":"), sort_keys=True)
+    return "-"
 
 
 def _load_effective_or_exit(ctx: typer.Context) -> EffectiveConfig:

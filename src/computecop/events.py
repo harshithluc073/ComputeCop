@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -124,6 +124,52 @@ def _parse_rows(text: str, limit: int | None) -> tuple[dict[str, Any], ...]:
         if isinstance(value, dict):
             parsed.append(value)
     return tuple(parsed)
+
+
+def event_correlation_ids(event: dict[str, Any]) -> set[str]:
+    """Collect every correlation and trace identifier referenced by an event."""
+
+    found: set[str] = set()
+    _collect_ids(event, found)
+    return found
+
+
+def _collect_ids(value: Any, found: set[str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {"correlation_id", "trace_id"} and isinstance(item, str) and item:
+                found.add(item)
+            else:
+                _collect_ids(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            _collect_ids(item, found)
+
+
+def event_matches_correlation(event: dict[str, Any], correlation_id: str) -> bool:
+    """Return whether an event references the given correlation or trace ID."""
+
+    return correlation_id in event_correlation_ids(event)
+
+
+def summarize_events(events: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate counts by kind and the observed time range for events."""
+
+    by_kind: dict[str, int] = {}
+    timestamps: list[str] = []
+    for event in events:
+        kind = str(event.get("kind", "unknown"))
+        by_kind[kind] = by_kind.get(kind, 0) + 1
+        timestamp = event.get("timestamp")
+        if isinstance(timestamp, str) and timestamp:
+            timestamps.append(timestamp)
+    timestamps.sort()
+    return {
+        "total": len(events),
+        "by_kind": dict(sorted(by_kind.items())),
+        "earliest": timestamps[0] if timestamps else None,
+        "latest": timestamps[-1] if timestamps else None,
+    }
 
 
 def _describe_os_error(exc: OSError) -> str:
