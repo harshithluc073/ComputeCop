@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -25,6 +24,7 @@ from computecop.policy import JuicePolicyEngine
 from computecop.processes import HeavyProcessDetector
 from computecop.request_queue import AsyncRequestQueue, QueueFullError, QueueTimeoutError
 from computecop.responses import decision_headers, decision_response, error_response
+from computecop.scheduler import AdaptiveScheduler
 from computecop.state import RuntimeStateStore
 from computecop.telemetry import PsutilTelemetrySampler, total_ram_bytes
 from computecop.telemetry_loop import TelemetryLoop
@@ -43,6 +43,7 @@ class ComputeCopRuntime:
     policy: JuicePolicyEngine
     admission: AdmissionController
     queue: AsyncRequestQueue
+    scheduler: AdaptiveScheduler
     upstream: UpstreamRouter
     telemetry_loop: TelemetryLoop
     yield_controller: RamYieldController
@@ -57,15 +58,8 @@ class ComputeCopRuntime:
 
         await self.telemetry_loop.start()
         if not self.queue_workers:
-            for index in range(self.config.policy.max_background_concurrency):
-                worker_id = f"computecop-queue-worker-{index}"
-                await self.queue.register_worker(worker_id)
-                self.queue_workers.append(
-                    asyncio.create_task(
-                        self.queue.run_worker(worker_id),
-                        name=worker_id,
-                    )
-                )
+            await self.scheduler.start()
+            self.queue_workers = list(self.scheduler.worker_tasks)
 
     async def stop(self, *, drain_timeout_seconds: float | None = None) -> None:
         """Stop background runtime services."""
@@ -83,11 +77,7 @@ class ComputeCopRuntime:
             if drain_seconds > 0:
                 await self.queue.drain(monotonic() + drain_seconds)
             await self.queue.close()
-            for worker in self.queue_workers:
-                worker.cancel()
-            for worker in self.queue_workers:
-                with contextlib.suppress(asyncio.CancelledError, RuntimeError):
-                    await worker
+            await self.scheduler.stop()
             self.queue_workers.clear()
             await self.upstream.close()
         finally:
@@ -115,6 +105,12 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
     routes = [endpoint.to_route() for endpoint in config.endpoints]
     queue = AsyncRequestQueue(config.queue)
     queue.set_change_callback(state.update_queue)
+    scheduler = AdaptiveScheduler(
+        queue,
+        policy_config=config.policy,
+        queue_config=config.queue,
+    )
+    scheduler.set_change_callback(state.update_scheduler)
     yield_controller = RamYieldController(config.policy)
     offload_manager = OffloadManager(routes)
     event_store = JsonlEventStore(config.event_log_path)
@@ -146,6 +142,8 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         )
         if pressure.yield_active:
             await event_store.append("policy.yield", reason=pressure.yield_reason)
+        scheduler.update_pressure(pressure)
+        await state.update_scheduler(scheduler.snapshot())
 
     telemetry_loop.subscribe(update_runtime)
 
@@ -156,6 +154,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         policy=policy,
         admission=AdmissionController(policy, config.queue),
         queue=queue,
+        scheduler=scheduler,
         upstream=UpstreamRouter(routes),
         telemetry_loop=telemetry_loop,
         yield_controller=yield_controller,
@@ -346,7 +345,7 @@ async def _handle_inference_request(
                 retry_after_seconds=runtime.config.queue.background_retry_after_seconds,
             )
         try:
-            return await runtime.queue.submit(metadata, forward)
+            return await runtime.scheduler.execute_queued(metadata, forward)
         except QueueFullError as exc:
             status_code = 429 if "full" in str(exc) else 503
             error_type = (
@@ -368,7 +367,7 @@ async def _handle_inference_request(
                 retry_after_seconds=runtime.config.queue.background_retry_after_seconds,
             )
 
-    return await forward()
+    return await runtime.scheduler.execute_immediate(metadata, forward)
 
 
 async def _forward_upstream(

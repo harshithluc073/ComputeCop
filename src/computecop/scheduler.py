@@ -100,6 +100,12 @@ class AdaptiveScheduler:
             + self.policy_config.max_background_concurrency
         )
 
+    @property
+    def worker_tasks(self) -> tuple[asyncio.Task[None], ...]:
+        """Return the active scheduler worker tasks."""
+
+        return tuple(self._worker_tasks)
+
     def set_change_callback(self, callback: SchedulerChangeCallback) -> None:
         """Register a callback invoked when scheduler counters change."""
 

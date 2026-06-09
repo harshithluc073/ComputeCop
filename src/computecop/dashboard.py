@@ -117,6 +117,14 @@ class Dashboard:
         table.add_row("Running background", str(snapshot.queue.running_background))
         table.add_row("Completed", str(snapshot.queue.completed))
         table.add_row("Rejected", str(snapshot.queue.rejected))
+        scheduler = snapshot.scheduler
+        table.add_row("Scheduler foreground slots", str(scheduler.reserved_foreground_slots))
+        table.add_row("Scheduler background slots", str(scheduler.effective_background_slots))
+        table.add_row(
+            "Scheduler running fg/bg",
+            f"{scheduler.running_foreground}/{scheduler.running_background}",
+        )
+        table.add_row("Scheduler spare slots", str(scheduler.spare_slots))
         return Panel(table, title="Policy", border_style="magenta")
 
     def _worker_panel(self, snapshot: RuntimeSnapshot) -> Panel:
