@@ -8,7 +8,13 @@ import pytest
 from typer.testing import CliRunner
 
 from computecop.cli import app
-from computecop.config import ConfigSource, EffectiveConfig, EndpointConfig, RuntimeConfig
+from computecop.config import (
+    ConfigError,
+    ConfigSource,
+    EffectiveConfig,
+    EndpointConfig,
+    RuntimeConfig,
+)
 from computecop.models import EndpointKind, EndpointRoute
 from computecop.upstream import HealthProbe, UpstreamFailureCategory
 
@@ -137,6 +143,37 @@ def test_cli_events_stats_empty_log(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     result = CliRunner().invoke(app, ["events", "stats"], env={"COLUMNS": "200"})
     assert result.exit_code == 0
     assert "total=0" in result.output
+
+
+def test_cli_doctor_table(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "computecop.doctor.load_effective_config", lambda **_: _effective_config(tmp_path)
+    )
+    result = CliRunner().invoke(app, ["doctor", "--skip-endpoints"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0
+    assert "ComputeCop Doctor" in result.output
+    assert "overall:" in result.output
+
+
+def test_cli_doctor_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "computecop.doctor.load_effective_config", lambda **_: _effective_config(tmp_path)
+    )
+    result = CliRunner().invoke(app, ["doctor", "--skip-endpoints", "--json"])
+    assert result.exit_code == 0
+    assert '"checks"' in result.output
+    assert '"python"' in result.output
+    assert '"config"' in result.output
+
+
+def test_cli_doctor_fails_on_invalid_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(**_):
+        raise ConfigError("broken config")
+
+    monkeypatch.setattr("computecop.doctor.load_effective_config", boom)
+    result = CliRunner().invoke(app, ["doctor", "--skip-endpoints", "--json"])
+    assert result.exit_code == 1
+    assert '"fail"' in result.output
 
 
 def _write_events(path: Path) -> None:
