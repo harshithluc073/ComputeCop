@@ -215,6 +215,43 @@ computecop events stats --json
 The event log location follows `COMPUTECOP_EVENT_LOG`, falling back to the
 per-user cache directory.
 
+## Diagnostics
+
+Run `computecop doctor` to verify the host is ready before serving traffic. It
+performs read-only checks and prints a single readiness report — handy when
+filing a bug report or onboarding a new machine:
+
+```bash
+computecop doctor
+```
+
+The doctor runs seven checks:
+
+| Check | What it verifies |
+| --- | --- |
+| `python` | The interpreter is Python 3.11 or newer. |
+| `platform` | The host OS is a supported platform. |
+| `ram` | Installed RAM meets the configured minimum. |
+| `psutil` | Host memory and CPU telemetry are readable. |
+| `endpoints` | Configured upstream inference endpoints are reachable. |
+| `event_log` | The event log path is writable. |
+| `config` | The effective configuration loads and validates. |
+
+Each check reports `ok`, `warn`, or `fail`. The command exits non-zero only on a
+hard failure such as an invalid configuration or unreadable telemetry. Degraded
+but usable states — an offline inference engine, a sub-minimum RAM machine —
+surface as warnings with a zero exit, so `doctor` is safe to run in CI.
+
+```bash
+# Emit the full report as JSON to attach to an issue.
+computecop doctor --json
+
+# Skip network probes when the inference engine is intentionally offline.
+computecop doctor --skip-endpoints
+```
+
+Pass `--config <path>` (before the subcommand) to validate a specific TOML file.
+
 ## Configuration
 
 ComputeCop loads settings in this order:
