@@ -111,11 +111,12 @@ class AdaptiveScheduler:
 
         self._change_callback = callback
 
-    def update_pressure(self, report: PressureReport) -> None:
+    async def update_pressure(self, report: PressureReport) -> None:
         """Shrink or restore background capacity based on live pressure."""
 
-        self._effective_background = effective_background_slots(report, self.policy_config)
-        self._condition.notify_all()
+        async with self._condition:
+            self._effective_background = effective_background_slots(report, self.policy_config)
+            self._condition.notify_all()
 
     def snapshot(self) -> SchedulerSnapshot:
         """Return the current scheduler capacity snapshot."""

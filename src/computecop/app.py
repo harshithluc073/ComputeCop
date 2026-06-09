@@ -142,7 +142,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         )
         if pressure.yield_active:
             await event_store.append("policy.yield", reason=pressure.yield_reason)
-        scheduler.update_pressure(pressure)
+        await scheduler.update_pressure(pressure)
         await state.update_scheduler(scheduler.snapshot())
 
     telemetry_loop.subscribe(update_runtime)
