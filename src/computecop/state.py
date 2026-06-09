@@ -49,6 +49,21 @@ class QueueSnapshot:
     workers: tuple[WorkerSnapshot, ...] = field(default_factory=tuple)
 
 
+@dataclass(frozen=True, slots=True)
+class SchedulerSnapshot:
+    """Adaptive scheduler capacity and execution counters."""
+
+    reserved_foreground_slots: int = 4
+    max_background_slots: int = 2
+    effective_background_slots: int = 2
+    running_foreground: int = 0
+    running_background: int = 0
+    total_capacity: int = 6
+    spare_slots: int = 6
+    immediate_executions: int = 0
+    queued_executions: int = 0
+
+
 # Backwards-compatible alias retained for callers that imported the previous name.
 QueueCounters = QueueSnapshot
 
@@ -63,6 +78,7 @@ class RuntimeSnapshot:
     yield_active: bool
     yield_reason: str | None
     queue: QueueSnapshot
+    scheduler: SchedulerSnapshot = field(default_factory=SchedulerSnapshot)
     event_persistence: EventPersistenceSnapshot = field(default_factory=EventPersistenceSnapshot)
     recent_decisions: tuple[AdmissionDecision, ...] = field(default_factory=tuple)
 
@@ -81,6 +97,7 @@ class RuntimeStateStore:
         self._yield_active = False
         self._yield_reason: str | None = None
         self._queue = QueueSnapshot()
+        self._scheduler = SchedulerSnapshot()
         self._event_persistence = EventPersistenceSnapshot()
         self._recent_decisions: deque[AdmissionDecision] = deque(maxlen=recent_decision_limit)
         self._decision_by_correlation_id: dict[str, AdmissionDecision] = {}
@@ -106,6 +123,10 @@ class RuntimeStateStore:
     async def update_queue(self, queue: QueueSnapshot) -> None:
         async with self._lock:
             self._queue = queue
+
+    async def update_scheduler(self, scheduler: SchedulerSnapshot) -> None:
+        async with self._lock:
+            self._scheduler = scheduler
 
     async def set_event_persistence(self, *, enabled: bool, disabled_reason: str | None) -> None:
         async with self._lock:
@@ -146,6 +167,7 @@ class RuntimeStateStore:
                 yield_active=self._yield_active,
                 yield_reason=self._yield_reason,
                 queue=self._queue,
+                scheduler=self._scheduler,
                 event_persistence=self._event_persistence,
                 recent_decisions=tuple(self._recent_decisions),
             )

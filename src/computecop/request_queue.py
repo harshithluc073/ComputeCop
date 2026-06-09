@@ -22,6 +22,7 @@ from computecop.state import QueueSnapshot, WorkerSnapshot
 
 T = TypeVar("T")
 QueueChangeCallback = Callable[[QueueSnapshot], Awaitable[None] | None]
+CapacityHook = Callable[[RequestMetadata], Awaitable[None]]
 
 
 class QueueFullError(RuntimeError):
@@ -50,6 +51,7 @@ class QueuedRequest(Generic[T]):
     deadline: float
     future: asyncio.Future[T]
     cancelled: bool = False
+    cancellation: asyncio.Event = field(default_factory=asyncio.Event)
 
     @property
     def expired(self) -> bool:
@@ -57,6 +59,7 @@ class QueuedRequest(Generic[T]):
 
     def cancel(self) -> None:
         self.cancelled = True
+        self.cancellation.set()
         if not self.future.done():
             self.future.cancel()
 
@@ -199,9 +202,10 @@ class AsyncRequestQueue:
                 if self._lifecycle_state == QueueLifecycleState.CLOSED and not self._heap:
                     raise QueueFullError("request queue is closed")
                 self._discard_expired_locked()
+                self._rebalance_aging_locked()
                 if self._heap:
                     item = heapq.heappop(self._heap)
-                    if item.request.cancelled:
+                    if item.request.cancelled or item.request.cancellation.is_set():
                         continue
                     if item.request.expired:
                         self._expire_request(item.request)
@@ -213,7 +217,13 @@ class AsyncRequestQueue:
         await self._notify_change()
         return request
 
-    async def run_worker(self, worker_id: str) -> None:
+    async def run_worker(
+        self,
+        worker_id: str,
+        *,
+        acquire: CapacityHook | None = None,
+        release: CapacityHook | None = None,
+    ) -> None:
         """Continuously execute queued work until the queue is closed."""
 
         await self._set_worker_state(worker_id, WorkerState.IDLE)
@@ -224,6 +234,13 @@ class AsyncRequestQueue:
             except QueueFullError:
                 await self._set_worker_state(worker_id, WorkerState.STOPPED)
                 return
+            if acquire is not None:
+                try:
+                    await acquire(request.metadata)
+                except asyncio.CancelledError:
+                    async with self._condition:
+                        self._mark_running(request.metadata.priority, delta=-1)
+                    raise
             correlation_id = request.metadata.correlation_id
             try:
                 await self._set_worker_state(
@@ -239,6 +256,8 @@ class AsyncRequestQueue:
                 if not request.future.done():
                     request.future.set_exception(exc)
             finally:
+                if release is not None:
+                    await release(request.metadata)
                 async with self._condition:
                     self._mark_running(request.metadata.priority, delta=-1)
                     self._completed += 1
@@ -298,7 +317,7 @@ class AsyncRequestQueue:
     def _discard_expired_locked(self) -> None:
         kept: list[_HeapItem[Any]] = []
         for item in self._heap:
-            if item.request.cancelled:
+            if item.request.cancelled or item.request.cancellation.is_set():
                 continue
             if item.request.expired:
                 self._expire_request(item.request)
@@ -307,6 +326,29 @@ class AsyncRequestQueue:
         if len(kept) != len(self._heap):
             heapq.heapify(kept)
             self._heap = kept
+
+    def _rebalance_aging_locked(self) -> None:
+        """Boost long-waiting background items to reduce starvation."""
+
+        interval = self.config.aging_interval_seconds
+        if interval <= 0 or not self._heap:
+            return
+        now = monotonic()
+        updated: list[_HeapItem[Any]] = []
+        for item in self._heap:
+            age_seconds = now - item.request.enqueued_at
+            aging_bonus = int(age_seconds / interval)
+            base_rank = _priority_rank(item.request.metadata.priority)
+            updated.append(
+                _HeapItem(
+                    priority_rank=max(0, base_rank - aging_bonus),
+                    sequence=item.sequence,
+                    deadline=item.deadline,
+                    request=item.request,
+                )
+            )
+        heapq.heapify(updated)
+        self._heap = updated
 
     @staticmethod
     def _expire_request(request: QueuedRequest[Any]) -> None:

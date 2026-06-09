@@ -112,6 +112,12 @@ class QueueConfig(BaseModel):
     default_timeout_seconds: float = Field(default=900.0, ge=1.0, le=86400.0)
     background_retry_after_seconds: float = Field(default=3.0, ge=0.1, le=3600.0)
     shutdown_drain_seconds: float = Field(default=5.0, ge=0.0, le=300.0)
+    aging_interval_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=600.0,
+        description="Seconds of queue wait before a background item gains scheduling priority.",
+    )
 
 
 class ServerConfig(BaseModel):
