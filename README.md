@@ -1,6 +1,6 @@
 # ComputeCop
 
-[![Version](https://img.shields.io/badge/version-0.1.9-blue.svg)](https://github.com/harshithluc073/ComputeCop)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://github.com/harshithluc073/ComputeCop)
 [![Python](https://img.shields.io/badge/python-3.11%2B-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-informational.svg)](#platform-support)
@@ -49,6 +49,9 @@ ComputeCop Proxy
         |
         +--> Admission Controller
         |       allow, throttle, queue, reject, yield
+        |
+        +--> Adaptive Scheduler
+        |       foreground reservation, spare-capacity background execution
         |
         +--> Upstream Router
                 Ollama, llama.cpp, OpenAI-compatible endpoint
@@ -158,6 +161,7 @@ The dashboard displays:
 - global `juice_level`
 - yield state
 - queue counters and lifecycle state
+- scheduler foreground reservation and effective background capacity
 - per-worker queue status and active correlation IDs
 - recent admission decisions
 - policy explanation traces
@@ -317,6 +321,9 @@ computecop config explain --json
 | `COMPUTECOP_RAM_RECOVER_GAP_PERCENT` | `7.0` | Hysteresis gap below dynamic yield threshold. |
 | `COMPUTECOP_CPU_PRESSURE_PERCENT` | `88.0` | CPU pressure threshold. |
 | `COMPUTECOP_QUEUE_MAX_SIZE` | `128` | Maximum queued background requests. |
+| `queue.aging_interval_seconds` | `30.0` | Queue wait interval before a background item gains priority. |
+| `policy.max_foreground_concurrency` | `4` | Reserved foreground execution slots. |
+| `policy.max_background_concurrency` | `2` | Maximum background execution slots. |
 | `COMPUTECOP_EVENT_LOG` | user cache directory | Optional JSONL event log path. |
 
 ### Endpoint Configuration

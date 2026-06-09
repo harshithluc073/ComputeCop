@@ -15,11 +15,14 @@ engines. The runtime graph has eight cooperating parts:
    API requests.
 5. `AdmissionController` decides whether requests are allowed, throttled,
    rejected, or held during RAM-yield pressure.
-6. `AsyncRequestQueue` executes throttled background traffic with bounded
-   priority ordering and live queue counters.
-7. `UpstreamRouter` forwards accepted traffic to Ollama, llama.cpp, or
+6. `AdaptiveScheduler` reserves foreground concurrency slots, governs background
+   work against spare capacity, and applies queue aging to reduce starvation.
+7. `AsyncRequestQueue` stores throttled background traffic with bounded priority
+   ordering and live queue counters.
+8. `UpstreamRouter` forwards accepted traffic to Ollama, llama.cpp, or
    OpenAI-compatible local endpoints.
-8. `Dashboard` renders live host and policy state in a Rich terminal interface.
+9. `Dashboard` renders live host, scheduler capacity, and policy state in a Rich
+   terminal interface.
 
 ## Prompt Versus Request Semantics
 
@@ -97,6 +100,39 @@ The background request queue exposes a lifecycle state through `GET /state`:
 - active correlation ID while a worker is executing safe queue metadata
 
 The Rich dashboard includes a Queue Workers panel with the same information.
+
+## Adaptive Scheduler
+
+Starting in v0.2.0, ComputeCop routes accepted proxy work through an adaptive
+scheduler that sits above the async request queue:
+
+- **Foreground reservation**: `policy.max_foreground_concurrency` slots are
+  reserved for direct prompts and interactive traffic. Foreground work does not
+  wait behind queued background batches.
+- **Spare-capacity background execution**: background work may use only spare
+  slots up to `policy.max_background_concurrency` and the current
+  `effective_background_slots` value.
+- **Pressure-aware shrinking**: when the host is recovering, pressured, or
+  yielding, the scheduler lowers `effective_background_slots` before admitting
+  more background execution.
+- **Queue aging**: long-waiting queued background items gain scheduling priority
+  on a configurable interval (`queue.aging_interval_seconds`) so bulk traffic
+  cannot starve indefinitely.
+
+`GET /state` exposes a `scheduler` object alongside queue counters:
+
+| Field | Meaning |
+| --- | --- |
+| `reserved_foreground_slots` | Foreground slots reserved by policy. |
+| `max_background_slots` | Configured background concurrency ceiling. |
+| `effective_background_slots` | Live background limit after pressure shaping. |
+| `running_foreground` | Foreground executions currently holding slots. |
+| `running_background` | Background executions currently holding slots. |
+| `total_capacity` | Combined foreground and background slot budget. |
+| `spare_slots` | Unused capacity across both classes. |
+
+The Rich dashboard Policy panel mirrors these scheduler counters for live
+operations.
 
 ## Graceful Shutdown
 
