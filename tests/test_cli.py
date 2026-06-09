@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -61,6 +62,106 @@ def test_cli_telemetry_command_runs() -> None:
     result = CliRunner().invoke(app, ["telemetry"])
     assert result.exit_code == 0
     assert "ram_used_percent" in result.output
+
+
+def test_cli_events_tail_table(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_events(tmp_path / "events.jsonl")
+    monkeypatch.setattr("computecop.cli.load_config", lambda **_: _config(tmp_path))
+    result = CliRunner().invoke(app, ["events", "tail", "-n", "2"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0
+    assert "Recent Events" in result.output
+    assert "policy.yield" in result.output
+    assert "upstream.failure" in result.output
+    # The oldest event is trimmed by the limit.
+    assert "admission.decision" not in result.output
+
+
+def test_cli_events_tail_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_events(tmp_path / "events.jsonl")
+    monkeypatch.setattr("computecop.cli.load_config", lambda **_: _config(tmp_path))
+    result = CliRunner().invoke(app, ["events", "tail", "--json"])
+    assert result.exit_code == 0
+    assert '"events"' in result.output
+    assert '"policy.yield"' in result.output
+
+
+def test_cli_events_find_by_correlation_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_events(tmp_path / "events.jsonl")
+    monkeypatch.setattr("computecop.cli.load_config", lambda **_: _config(tmp_path))
+    result = CliRunner().invoke(app, ["events", "find", "--correlation-id", "corr-123", "--json"])
+    assert result.exit_code == 0
+    # Matches the top-level correlation_id and the one nested in the decision payload.
+    assert '"admission.decision"' in result.output
+    assert '"upstream.failure"' in result.output
+    assert '"policy.yield"' not in result.output
+
+
+def test_cli_events_find_by_trace_id(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_events(tmp_path / "events.jsonl")
+    monkeypatch.setattr("computecop.cli.load_config", lambda **_: _config(tmp_path))
+    result = CliRunner().invoke(app, ["events", "find", "--correlation-id", "t-abc", "--json"])
+    assert result.exit_code == 0
+    assert '"admission.decision"' in result.output
+    assert '"upstream.failure"' not in result.output
+
+
+def test_cli_events_find_not_found(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_events(tmp_path / "events.jsonl")
+    monkeypatch.setattr("computecop.cli.load_config", lambda **_: _config(tmp_path))
+    result = CliRunner().invoke(app, ["events", "find", "--correlation-id", "missing"])
+    assert result.exit_code == 0
+    assert "no events found" in result.output
+
+
+def test_cli_events_stats_table(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_events(tmp_path / "events.jsonl")
+    monkeypatch.setattr("computecop.cli.load_config", lambda **_: _config(tmp_path))
+    result = CliRunner().invoke(app, ["events", "stats"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0
+    assert "Event Statistics" in result.output
+    assert "admission.decision" in result.output
+    assert "total=3" in result.output
+
+
+def test_cli_events_stats_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _write_events(tmp_path / "events.jsonl")
+    monkeypatch.setattr("computecop.cli.load_config", lambda **_: _config(tmp_path))
+    result = CliRunner().invoke(app, ["events", "stats", "--json"])
+    assert result.exit_code == 0
+    assert '"total": 3' in result.output
+    assert '"by_kind"' in result.output
+
+
+def test_cli_events_stats_empty_log(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("computecop.cli.load_config", lambda **_: _config(tmp_path))
+    result = CliRunner().invoke(app, ["events", "stats"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0
+    assert "total=0" in result.output
+
+
+def _write_events(path: Path) -> None:
+    rows = [
+        {
+            "kind": "admission.decision",
+            "timestamp": "2026-06-09T10:00:00+00:00",
+            "payload": {
+                "path": "/v1/chat/completions",
+                "trace_id": "t-abc",
+                "decision": {"correlation_id": "corr-123"},
+            },
+        },
+        {
+            "kind": "policy.yield",
+            "timestamp": "2026-06-09T10:01:00+00:00",
+            "payload": {"reason": "ram pressure"},
+        },
+        {
+            "kind": "upstream.failure",
+            "timestamp": "2026-06-09T10:02:00+00:00",
+            "payload": {"correlation_id": "corr-123", "category": "timeout"},
+        },
+    ]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
 
 
 def _config(tmp_path: Path) -> RuntimeConfig:
