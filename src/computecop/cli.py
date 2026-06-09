@@ -16,6 +16,7 @@ from rich.table import Table
 from computecop.app import build_runtime, create_app
 from computecop.config import ConfigError, EffectiveConfig, load_config, load_effective_config
 from computecop.dashboard import Dashboard
+from computecop.doctor import CheckStatus, DiagnosticReport, run_diagnostics
 from computecop.events import (
     JsonlEventStore,
     event_matches_correlation,
@@ -276,6 +277,50 @@ def probe(ctx: typer.Context) -> None:
         asyncio.run(_probe())
     except KeyboardInterrupt:
         Console().print("[yellow]ComputeCop probe stopped[/yellow]")
+
+
+@app.command()
+def doctor(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json", help="Emit diagnostics as JSON."),
+    skip_endpoints: bool = typer.Option(
+        False,
+        "--skip-endpoints",
+        help="Skip upstream endpoint reachability probes.",
+    ),
+) -> None:
+    """Run environment diagnostics and report ComputeCop readiness."""
+
+    config_path = _cli_context(ctx).config_path
+    report = asyncio.run(
+        run_diagnostics(config_path=config_path, probe_endpoints=not skip_endpoints)
+    )
+    if json_output:
+        Console().print_json(json.dumps(report.to_dict()))
+    else:
+        _print_doctor_report(report)
+    raise typer.Exit(code=0 if report.ok else 1)
+
+
+def _print_doctor_report(report: DiagnosticReport) -> None:
+    table = Table(title="ComputeCop Doctor")
+    table.add_column("Check")
+    table.add_column("Status")
+    table.add_column("Summary")
+    for check in report.checks:
+        table.add_row(check.name, _status_label(check.status), check.summary)
+    console = Console()
+    console.print(table)
+    console.print(f"overall: {_status_label(report.overall_status)}")
+
+
+def _status_label(status: CheckStatus) -> str:
+    color = {
+        CheckStatus.OK: "green",
+        CheckStatus.WARN: "yellow",
+        CheckStatus.FAIL: "red",
+    }[status]
+    return f"[{color}]{status.value}[/{color}]"
 
 
 def _probe_status(result: HealthProbe) -> str:
