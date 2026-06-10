@@ -194,6 +194,35 @@ Override endpoints with `COMPUTECOP_ENDPOINTS`, a JSON list matching
 `EndpointConfig` fields. Use `x-computecop-endpoint` to route a request to a
 specific configured endpoint by name.
 
+## Endpoint Capability Registry
+
+Starting in v0.2.1, ComputeCop maintains a capability registry for every
+configured upstream endpoint. The registry records API family, streaming support,
+model-list support, offload support, default context/output hints, cached health
+status, probe latency, failure streak, and a rolling failure rate.
+
+Capability health probes are cached with a TTL controlled by
+`endpoint_registry.capability_probe_ttl_seconds` (default 30 seconds). Pass
+`?refresh=true` to `GET /endpoints` to force a fresh probe cycle.
+
+```text
+GET /endpoints
+GET /endpoints?refresh=true
+```
+
+Each endpoint record includes:
+
+| Section | Fields |
+| --- | --- |
+| `capabilities` | `api_family`, `supports_streaming`, `supports_model_list`, `supports_offload`, `default_context_tokens`, `default_output_tokens` |
+| `health` | `healthy`, `status_code`, `latency_ms`, `failure_rate`, `failure_streak`, `last_success_at`, `checked_at`, `detail`, `stale` |
+| `routing` | `is_default`, `explicit_header`, `compatible_api_families` |
+
+When a request does not specify `x-computecop-endpoint`, ComputeCop selects a
+compatible endpoint for the incoming API family. Healthy endpoints with lower
+failure rates are preferred. Streaming requests require an endpoint with
+`supports_streaming=true`.
+
 ## Upstream Failure Categories
 
 When an upstream endpoint cannot serve a request, ComputeCop converts the

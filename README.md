@@ -357,6 +357,17 @@ Route a request to a specific endpoint with:
 x-computecop-endpoint: llama-cpp
 ```
 
+Inspect configured endpoint capabilities, cached health, and routing metadata:
+
+```bash
+curl http://127.0.0.1:8765/endpoints
+curl "http://127.0.0.1:8765/endpoints?refresh=true"
+```
+
+Each record reports API family, streaming/model-list/offload support, default
+context hints, probe latency, failure rate, and whether the endpoint is the
+default route for its family.
+
 ## Request Priority
 
 ComputeCop distinguishes direct prompts from automated requests.
