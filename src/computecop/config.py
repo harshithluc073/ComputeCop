@@ -114,6 +114,40 @@ class EndpointRegistryConfig(BaseModel):
         le=600.0,
         description="Seconds to cache endpoint capability health probes.",
     )
+    health_watcher_enabled: bool = Field(
+        default=True,
+        description="Run a background loop that proactively probes endpoint health.",
+    )
+    health_watcher_interval_seconds: float = Field(
+        default=15.0,
+        ge=1.0,
+        le=600.0,
+        description="Base interval between background endpoint health probe cycles.",
+    )
+    health_watcher_jitter_fraction: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=0.5,
+        description="Random jitter fraction applied to the health watcher interval.",
+    )
+    circuit_breaker_failure_threshold: int = Field(
+        default=3,
+        ge=1,
+        le=100,
+        description="Consecutive failures before an endpoint circuit breaker opens.",
+    )
+    circuit_breaker_cooldown_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=3600.0,
+        description="Seconds to wait before a circuit breaker enters half-open.",
+    )
+    circuit_breaker_half_open_successes: int = Field(
+        default=1,
+        ge=1,
+        le=10,
+        description="Successful probes or requests required to close a half-open breaker.",
+    )
 
 
 class QueueConfig(BaseModel):
