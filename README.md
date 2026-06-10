@@ -1,6 +1,6 @@
 # ComputeCop
 
-[![Version](https://img.shields.io/badge/version-0.2.1-blue.svg)](https://github.com/harshithluc073/ComputeCop)
+[![Version](https://img.shields.io/badge/version-0.2.2-blue.svg)](https://github.com/harshithluc073/ComputeCop)
 [![Python](https://img.shields.io/badge/python-3.11%2B-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-informational.svg)](#platform-support)
@@ -52,6 +52,9 @@ ComputeCop Proxy
         |
         +--> Adaptive Scheduler
         |       foreground reservation, spare-capacity background execution
+        |
+        +--> Endpoint Health Watcher
+        |       proactive probes with circuit breaker state
         |
         +--> Upstream Router
                 Ollama, llama.cpp, OpenAI-compatible endpoint
@@ -325,6 +328,9 @@ computecop config explain --json
 | `policy.max_foreground_concurrency` | `4` | Reserved foreground execution slots. |
 | `policy.max_background_concurrency` | `2` | Maximum background execution slots. |
 | `COMPUTECOP_EVENT_LOG` | user cache directory | Optional JSONL event log path. |
+| `endpoint_registry.health_watcher_interval_seconds` | `15` | Background endpoint health probe interval. |
+| `endpoint_registry.circuit_breaker_failure_threshold` | `3` | Consecutive failures before a circuit breaker opens. |
+| `endpoint_registry.circuit_breaker_cooldown_seconds` | `30` | Seconds before an open breaker enters half-open. |
 
 ### Endpoint Configuration
 
@@ -365,8 +371,13 @@ curl "http://127.0.0.1:8765/endpoints?refresh=true"
 ```
 
 Each record reports API family, streaming/model-list/offload support, default
-context hints, probe latency, failure rate, and whether the endpoint is the
-default route for its family.
+context hints, probe latency, failure rate, circuit breaker state, and whether
+the endpoint is the default route for its family.
+
+ComputeCop also runs a background health watcher (default 15-second interval) and
+opens a per-endpoint circuit breaker after repeated probe or upstream failures.
+Open breakers stop routing traffic until the cool-down elapses and a successful
+probe closes the breaker.
 
 ## Request Priority
 

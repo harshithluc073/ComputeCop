@@ -221,7 +221,47 @@ Each endpoint record includes:
 When a request does not specify `x-computecop-endpoint`, ComputeCop selects a
 compatible endpoint for the incoming API family. Healthy endpoints with lower
 failure rates are preferred. Streaming requests require an endpoint with
-`supports_streaming=true`.
+`supports_streaming=true`. Endpoints with an open circuit breaker are excluded
+from automatic selection.
+
+## Endpoint Health Watcher
+
+Starting in v0.2.2, ComputeCop runs a background health watcher that proactively
+probes every configured endpoint on a fixed interval with randomized jitter. The
+watcher keeps health snapshots warm so routing decisions can use recent probe
+data instead of waiting for the next on-demand request.
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `endpoint_registry.health_watcher_enabled` | `true` | Enable the background probe loop. |
+| `endpoint_registry.health_watcher_interval_seconds` | `15` | Base seconds between probe cycles. |
+| `endpoint_registry.health_watcher_jitter_fraction` | `0.1` | Random jitter fraction applied to the interval. |
+
+Each probe records latency, failure streak, last success time, and a failure
+status category when the endpoint is unhealthy. Disable the watcher only when an
+external orchestrator is already probing the same endpoints.
+
+## Endpoint Circuit Breakers
+
+ComputeCop tracks per-endpoint circuit breaker state to avoid repeatedly routing
+work to a failing upstream:
+
+| State | Traffic allowed | Meaning |
+| --- | --- | --- |
+| `closed` | yes | Normal operation. |
+| `open` | no | Too many consecutive probe or request failures. |
+| `half_open` | yes | Cool-down elapsed; one successful probe closes the breaker. |
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `endpoint_registry.circuit_breaker_failure_threshold` | `3` | Consecutive failures before opening. |
+| `endpoint_registry.circuit_breaker_cooldown_seconds` | `30` | Seconds before entering `half_open`. |
+| `endpoint_registry.circuit_breaker_half_open_successes` | `1` | Successes required to close from `half_open`. |
+
+Both background probes and proxied upstream requests update breaker state. When
+every compatible breaker is open, ComputeCop returns a retryable `503` with
+remediation guidance instead of hammering a dead endpoint. Inspect breaker state
+through `GET /endpoints` under each endpoint's `health.circuit_breaker` object.
 
 ## Upstream Failure Categories
 
