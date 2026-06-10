@@ -578,9 +578,9 @@ def _select_route(
         for route in runtime.upstream.routes.values():
             if route.kind == preferred and runtime.endpoint_registry.allows_traffic(route.name):
                 return route
-    default_route = runtime.upstream.default_route
-    if runtime.endpoint_registry.allows_traffic(default_route.name):
-        return default_route
+    fallback = runtime.upstream.route(None)
+    if runtime.endpoint_registry.allows_traffic(fallback.name):
+        return fallback
     raise UpstreamFailure(
         "no upstream endpoint is available; all configured circuit breakers are open",
         category=UpstreamFailureCategory.UNREACHABLE,
