@@ -18,6 +18,7 @@ from computecop.classifier import RequestClassifier
 from computecop.config import RuntimeConfig, cached_config
 from computecop.endpoints import EndpointCapabilityRegistry, resolve_api_family
 from computecop.events import JsonlEventStore
+from computecop.health import EndpointHealthWatcher
 from computecop.models import DecisionType, RequestClass, RequestMetadata, to_jsonable
 from computecop.offload import OffloadManager
 from computecop.platform import current_platform_name
@@ -30,7 +31,7 @@ from computecop.state import RuntimeStateStore
 from computecop.telemetry import PsutilTelemetrySampler, total_ram_bytes
 from computecop.telemetry_loop import TelemetryLoop
 from computecop.thermal import ThermalDetector, ThermalThresholds
-from computecop.upstream import UpstreamFailure, UpstreamRouter
+from computecop.upstream import UpstreamFailure, UpstreamFailureCategory, UpstreamRouter
 from computecop.yielding import RamYieldController
 
 
@@ -47,6 +48,7 @@ class ComputeCopRuntime:
     scheduler: AdaptiveScheduler
     upstream: UpstreamRouter
     endpoint_registry: EndpointCapabilityRegistry
+    health_watcher: EndpointHealthWatcher
     telemetry_loop: TelemetryLoop
     yield_controller: RamYieldController
     offload_manager: OffloadManager
@@ -59,6 +61,7 @@ class ComputeCopRuntime:
         """Start background runtime services."""
 
         await self.telemetry_loop.start()
+        await self.health_watcher.start()
         if not self.queue_workers:
             await self.scheduler.start()
             self.queue_workers = list(self.scheduler.worker_tasks)
@@ -70,6 +73,7 @@ class ComputeCopRuntime:
             return
         self._stopping = True
         try:
+            await self.health_watcher.stop()
             await self.telemetry_loop.stop()
             drain_seconds = (
                 self.config.queue.shutdown_drain_seconds
@@ -106,9 +110,20 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
     policy = JuicePolicyEngine(config.policy)
     routes = [endpoint.to_route() for endpoint in config.endpoints]
     upstream = UpstreamRouter(routes)
+    registry_config = config.endpoint_registry
     endpoint_registry = EndpointCapabilityRegistry(
         upstream,
-        probe_ttl_seconds=config.endpoint_registry.capability_probe_ttl_seconds,
+        probe_ttl_seconds=registry_config.capability_probe_ttl_seconds,
+        failure_threshold=registry_config.circuit_breaker_failure_threshold,
+        cooldown_seconds=registry_config.circuit_breaker_cooldown_seconds,
+        half_open_successes=registry_config.circuit_breaker_half_open_successes,
+    )
+    health_watcher = EndpointHealthWatcher(
+        endpoint_registry,
+        upstream,
+        interval_seconds=registry_config.health_watcher_interval_seconds,
+        jitter_fraction=registry_config.health_watcher_jitter_fraction,
+        enabled=registry_config.health_watcher_enabled,
     )
     queue = AsyncRequestQueue(config.queue)
     queue.set_change_callback(state.update_queue)
@@ -164,6 +179,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         scheduler=scheduler,
         upstream=upstream,
         endpoint_registry=endpoint_registry,
+        health_watcher=health_watcher,
         telemetry_loop=telemetry_loop,
         yield_controller=yield_controller,
         offload_manager=offload_manager,
@@ -408,12 +424,16 @@ async def _forward_upstream(
         )
         if requires_streaming and route.supports_streaming:
             return StreamingResponse(
-                runtime.upstream.stream(
-                    route,
-                    method=request.method,
-                    path=upstream_path,
-                    headers=headers,
-                    json_body=shaped_body,
+                _tracked_stream(
+                    runtime=runtime,
+                    route_name=route.name,
+                    stream=runtime.upstream.stream(
+                        route,
+                        method=request.method,
+                        path=upstream_path,
+                        headers=headers,
+                        json_body=shaped_body,
+                    ),
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -427,7 +447,10 @@ async def _forward_upstream(
             headers=headers,
             json_body=shaped_body,
         )
+        runtime.endpoint_registry.record_upstream_success(route.name)
     except UpstreamFailure as exc:
+        if exc.endpoint:
+            runtime.endpoint_registry.record_upstream_failure(exc.endpoint)
         await runtime.event_store.append(
             "upstream.failure",
             correlation_id=metadata.correlation_id,
@@ -530,7 +553,20 @@ def _select_route(
     requires_streaming: bool = False,
 ):
     if endpoint_name:
-        return runtime.upstream.route(endpoint_name)
+        route = runtime.upstream.route(endpoint_name)
+        if not runtime.endpoint_registry.allows_traffic(route.name):
+            raise UpstreamFailure(
+                f"endpoint '{route.name}' circuit breaker is open",
+                category=UpstreamFailureCategory.UNREACHABLE,
+                status_code=503,
+                endpoint=route.name,
+                retryable=True,
+                remediation=(
+                    f"wait for endpoint '{route.name}' to recover or inspect "
+                    "GET /endpoints for circuit breaker status"
+                ),
+            )
+        return route
     selected = runtime.endpoint_registry.select_compatible(
         family=family,
         requires_streaming=requires_streaming,
@@ -540,9 +576,34 @@ def _select_route(
     preferred = resolve_api_family(family)
     if preferred is not None:
         for route in runtime.upstream.routes.values():
-            if route.kind == preferred:
+            if route.kind == preferred and runtime.endpoint_registry.allows_traffic(route.name):
                 return route
-    return runtime.upstream.route(None)
+    default_route = runtime.upstream.default_route
+    if runtime.endpoint_registry.allows_traffic(default_route.name):
+        return default_route
+    raise UpstreamFailure(
+        "no upstream endpoint is available; all configured circuit breakers are open",
+        category=UpstreamFailureCategory.UNREACHABLE,
+        status_code=503,
+        endpoint=None,
+        retryable=True,
+        remediation="inspect GET /endpoints for circuit breaker status and endpoint health",
+    )
+
+
+async def _tracked_stream(
+    *,
+    runtime: ComputeCopRuntime,
+    route_name: str,
+    stream: AsyncIterator[bytes],
+) -> AsyncIterator[bytes]:
+    try:
+        async for chunk in stream:
+            yield chunk
+        runtime.endpoint_registry.record_upstream_success(route_name)
+    except UpstreamFailure:
+        runtime.endpoint_registry.record_upstream_failure(route_name)
+        raise
 
 
 def json_dumps(value: object) -> str:

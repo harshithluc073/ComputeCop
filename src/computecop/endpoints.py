@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from computecop.health import CircuitBreakerRegistry, CircuitBreakerStatus
 from computecop.models import EndpointKind, EndpointRoute, utc_now
 from computecop.upstream import HealthProbe, UpstreamRouter
 
@@ -55,7 +56,9 @@ class EndpointHealthStatus:
     last_success_at: datetime | None
     checked_at: datetime | None
     detail: str
+    status_category: str | None = None
     stale: bool = False
+    circuit_breaker: CircuitBreakerStatus | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +115,13 @@ class EndpointRecord:
                     else None
                 ),
                 "detail": self.health.detail,
+                "status_category": self.health.status_category,
                 "stale": self.health.stale,
+                "circuit_breaker": (
+                    self.health.circuit_breaker.to_dict()
+                    if self.health.circuit_breaker is not None
+                    else None
+                ),
             },
             "routing": {
                 "is_default": self.routing.is_default,
@@ -138,16 +147,44 @@ class EndpointCapabilityRegistry:
         router: UpstreamRouter,
         *,
         probe_ttl_seconds: float = 30.0,
+        failure_threshold: int = 3,
+        cooldown_seconds: float = 30.0,
+        half_open_successes: int = 1,
     ) -> None:
         if probe_ttl_seconds <= 0:
             raise ValueError("probe_ttl_seconds must be positive")
         self._router = router
         self._probe_ttl_seconds = probe_ttl_seconds
         self._cache: dict[str, _ProbeCacheEntry] = {}
+        self._circuit_breakers = CircuitBreakerRegistry(
+            list(router.routes.keys()),
+            failure_threshold=failure_threshold,
+            cooldown_seconds=cooldown_seconds,
+            half_open_successes=half_open_successes,
+        )
 
     @property
     def probe_ttl_seconds(self) -> float:
         return self._probe_ttl_seconds
+
+    @property
+    def circuit_breakers(self) -> CircuitBreakerRegistry:
+        return self._circuit_breakers
+
+    def allows_traffic(self, endpoint_name: str) -> bool:
+        """Return whether routing may send traffic to the endpoint."""
+
+        return self._circuit_breakers.allows_traffic(endpoint_name)
+
+    def record_upstream_success(self, endpoint_name: str) -> CircuitBreakerStatus:
+        """Record a successful upstream request for circuit breaker state."""
+
+        return self._circuit_breakers.record_success(endpoint_name)
+
+    def record_upstream_failure(self, endpoint_name: str) -> CircuitBreakerStatus:
+        """Record a failed upstream request for circuit breaker state."""
+
+        return self._circuit_breakers.record_failure(endpoint_name)
 
     def capabilities_for(self, route: EndpointRoute) -> EndpointCapabilities:
         """Return static capabilities derived from endpoint kind and config."""
@@ -180,6 +217,7 @@ class EndpointCapabilityRegistry:
                 cached.probe,
                 failure_rate=_failure_rate(cached),
                 stale=False,
+                circuit_breaker=self._circuit_breakers.snapshot(route.name),
             )
 
         probe = await self._router.probe(route)
@@ -190,12 +228,20 @@ class EndpointCapabilityRegistry:
             failed_probes=0,
         )
         entry.total_probes += 1
-        if not probe.healthy:
+        if probe.healthy:
+            self._circuit_breakers.record_success(route.name)
+        else:
             entry.failed_probes += 1
+            self._circuit_breakers.record_failure(route.name)
         entry.probe = probe
         entry.cached_at_monotonic = now
         self._cache[route.name] = entry
-        return _health_from_probe(probe, failure_rate=_failure_rate(entry), stale=False)
+        return _health_from_probe(
+            probe,
+            failure_rate=_failure_rate(entry),
+            stale=False,
+            circuit_breaker=self._circuit_breakers.snapshot(route.name),
+        )
 
     async def record(
         self,
@@ -252,8 +298,18 @@ class EndpointCapabilityRegistry:
         if not prefer_healthy:
             return candidates[0]
 
-        healthy = [route for route in candidates if _cached_is_healthy(self._cache.get(route.name))]
-        pool = healthy or candidates
+        available = [
+            route
+            for route in candidates
+            if self._circuit_breakers.allows_traffic(route.name)
+        ]
+        if not available:
+            return None
+
+        healthy = [
+            route for route in available if _cached_is_healthy(self._cache.get(route.name))
+        ]
+        pool = healthy or available
         return _select_lowest_failure_rate(pool, self._cache)
 
     def invalidate(self, name: str | None = None) -> None:
@@ -335,7 +391,11 @@ def _health_from_probe(
     *,
     failure_rate: float,
     stale: bool,
+    circuit_breaker: CircuitBreakerStatus | None = None,
 ) -> EndpointHealthStatus:
+    status_category = (
+        probe.failure_category.value if probe.failure_category is not None else None
+    )
     return EndpointHealthStatus(
         healthy=probe.healthy,
         status_code=probe.status_code,
@@ -345,5 +405,7 @@ def _health_from_probe(
         last_success_at=probe.last_success_at,
         checked_at=probe.checked_at or utc_now(),
         detail=probe.detail,
+        status_category=status_category,
         stale=stale,
+        circuit_breaker=circuit_breaker,
     )
