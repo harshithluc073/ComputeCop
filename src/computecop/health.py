@@ -175,9 +175,7 @@ class CircuitBreakerRegistry:
         self._failure_threshold = failure_threshold
         self._cooldown_seconds = cooldown_seconds
         self._half_open_successes = half_open_successes
-        self._breakers = {
-            name: self._new_breaker() for name in sorted(set(endpoint_names))
-        }
+        self._breakers = {name: self._new_breaker() for name in sorted(set(endpoint_names))}
 
     def for_endpoint(self, name: str) -> EndpointCircuitBreaker:
         if name not in self._breakers:
@@ -276,8 +274,7 @@ class EndpointHealthWatcher:
                         error=repr(exc),
                     )
                 delay = self._interval_seconds * (
-                    1.0
-                    + random.uniform(-self._jitter_fraction, self._jitter_fraction)
+                    1.0 + random.uniform(-self._jitter_fraction, self._jitter_fraction)
                 )
                 await asyncio.sleep(max(0.1, delay))
         finally:

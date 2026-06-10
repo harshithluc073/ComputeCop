@@ -299,16 +299,12 @@ class EndpointCapabilityRegistry:
             return candidates[0]
 
         available = [
-            route
-            for route in candidates
-            if self._circuit_breakers.allows_traffic(route.name)
+            route for route in candidates if self._circuit_breakers.allows_traffic(route.name)
         ]
         if not available:
             return None
 
-        healthy = [
-            route for route in available if _cached_is_healthy(self._cache.get(route.name))
-        ]
+        healthy = [route for route in available if _cached_is_healthy(self._cache.get(route.name))]
         pool = healthy or available
         return _select_lowest_failure_rate(pool, self._cache)
 
@@ -393,9 +389,7 @@ def _health_from_probe(
     stale: bool,
     circuit_breaker: CircuitBreakerStatus | None = None,
 ) -> EndpointHealthStatus:
-    status_category = (
-        probe.failure_category.value if probe.failure_category is not None else None
-    )
+    status_category = probe.failure_category.value if probe.failure_category is not None else None
     return EndpointHealthStatus(
         healthy=probe.healthy,
         status_code=probe.status_code,
