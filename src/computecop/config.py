@@ -105,6 +105,17 @@ class PolicyConfig(BaseModel):
         return value
 
 
+class EndpointRegistryConfig(BaseModel):
+    """Endpoint capability registry settings."""
+
+    capability_probe_ttl_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=600.0,
+        description="Seconds to cache endpoint capability health probes.",
+    )
+
+
 class QueueConfig(BaseModel):
     """Async request queue limits."""
 
@@ -132,6 +143,7 @@ class RuntimeConfig(BaseModel):
     """Complete ComputeCop runtime configuration."""
 
     server: ServerConfig = Field(default_factory=ServerConfig)
+    endpoint_registry: EndpointRegistryConfig = Field(default_factory=EndpointRegistryConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     queue: QueueConfig = Field(default_factory=QueueConfig)

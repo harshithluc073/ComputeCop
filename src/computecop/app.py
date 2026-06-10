@@ -16,8 +16,9 @@ from computecop import __version__
 from computecop.admission import AdmissionController
 from computecop.classifier import RequestClassifier
 from computecop.config import RuntimeConfig, cached_config
+from computecop.endpoints import EndpointCapabilityRegistry, resolve_api_family
 from computecop.events import JsonlEventStore
-from computecop.models import DecisionType, EndpointKind, RequestClass, RequestMetadata, to_jsonable
+from computecop.models import DecisionType, RequestClass, RequestMetadata, to_jsonable
 from computecop.offload import OffloadManager
 from computecop.platform import current_platform_name
 from computecop.policy import JuicePolicyEngine
@@ -45,6 +46,7 @@ class ComputeCopRuntime:
     queue: AsyncRequestQueue
     scheduler: AdaptiveScheduler
     upstream: UpstreamRouter
+    endpoint_registry: EndpointCapabilityRegistry
     telemetry_loop: TelemetryLoop
     yield_controller: RamYieldController
     offload_manager: OffloadManager
@@ -103,6 +105,11 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
     state = RuntimeStateStore()
     policy = JuicePolicyEngine(config.policy)
     routes = [endpoint.to_route() for endpoint in config.endpoints]
+    upstream = UpstreamRouter(routes)
+    endpoint_registry = EndpointCapabilityRegistry(
+        upstream,
+        probe_ttl_seconds=config.endpoint_registry.capability_probe_ttl_seconds,
+    )
     queue = AsyncRequestQueue(config.queue)
     queue.set_change_callback(state.update_queue)
     scheduler = AdaptiveScheduler(
@@ -155,7 +162,8 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         admission=AdmissionController(policy, config.queue),
         queue=queue,
         scheduler=scheduler,
-        upstream=UpstreamRouter(routes),
+        upstream=upstream,
+        endpoint_registry=endpoint_registry,
         telemetry_loop=telemetry_loop,
         yield_controller=yield_controller,
         offload_manager=offload_manager,
@@ -208,6 +216,11 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
     @app.get("/events")
     async def events(limit: int = 100) -> dict[str, object]:
         return {"events": list(await runtime.event_store.tail(limit=max(1, min(limit, 500))))}
+
+    @app.get("/endpoints")
+    async def endpoints(refresh: bool = False) -> dict[str, object]:
+        records = await runtime.endpoint_registry.list_records(force_probe=refresh)
+        return {"endpoints": [record.to_dict() for record in records]}
 
     @app.get("/decisions/{correlation_id}")
     async def decision(correlation_id: str) -> Response:
@@ -386,12 +399,14 @@ async def _forward_upstream(
     headers["x-computecop-juice-level"] = str(decision.budget.juice_level)
 
     try:
-        route = _select_route(runtime, metadata.endpoint_name, family)
-        if (
-            isinstance(shaped_body, dict)
-            and shaped_body.get("stream") is True
-            and route.supports_streaming
-        ):
+        requires_streaming = isinstance(shaped_body, dict) and shaped_body.get("stream") is True
+        route = _select_route(
+            runtime,
+            metadata.endpoint_name,
+            family,
+            requires_streaming=requires_streaming,
+        )
+        if requires_streaming and route.supports_streaming:
             return StreamingResponse(
                 runtime.upstream.stream(
                     route,
@@ -507,14 +522,22 @@ def _shape_llama_cpp_body(body: dict[str, Any], budget) -> dict[str, Any]:
     return shaped
 
 
-def _select_route(runtime: ComputeCopRuntime, endpoint_name: str | None, family: str):
+def _select_route(
+    runtime: ComputeCopRuntime,
+    endpoint_name: str | None,
+    family: str,
+    *,
+    requires_streaming: bool = False,
+):
     if endpoint_name:
         return runtime.upstream.route(endpoint_name)
-    preferred = {
-        "ollama": EndpointKind.OLLAMA,
-        "llama_cpp": EndpointKind.LLAMA_CPP,
-        "openai": EndpointKind.OPENAI_COMPATIBLE,
-    }.get(family)
+    selected = runtime.endpoint_registry.select_compatible(
+        family=family,
+        requires_streaming=requires_streaming,
+    )
+    if selected is not None:
+        return selected
+    preferred = resolve_api_family(family)
     if preferred is not None:
         for route in runtime.upstream.routes.values():
             if route.kind == preferred:
