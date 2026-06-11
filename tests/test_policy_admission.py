@@ -97,3 +97,34 @@ def test_admission_yields_background_during_ram_pressure() -> None:
     assert decision.trace is not None
     assert decision.trace.queue_position == 1
     assert decision.trace.shaped_context_tokens == decision.budget.max_context_tokens
+
+
+def test_admission_throttles_large_background_request() -> None:
+    from computecop.models import TokenEstimationResult
+    engine = JuicePolicyEngine(PolicyConfig())
+    controller = AdmissionController(engine, QueueConfig())
+    report = engine.evaluate(_telemetry(50.0))  # system pressure normal
+
+    # Context budget for normal background request is based on global juice level 70
+    budget = engine.budget_for(RequestClass.BACKGROUND_REQUEST, report)
+
+    # Let's create a metadata with estimated tokens exceeding this context budget
+    metadata = RequestMetadata(
+        method="POST",
+        path="/api/chat",
+        headers={},
+        request_class=RequestClass.BACKGROUND_REQUEST,
+        priority=RequestPriority.BACKGROUND,
+        token_estimation=TokenEstimationResult(
+            estimated_tokens=int(budget.max_context_tokens + 100),
+            confidence=0.8,
+            field_contribution={"messages": int(budget.max_context_tokens + 100)},
+        ),
+    )
+    decision = controller.decide(metadata, report, queue_size=0)
+    assert decision.decision == DecisionType.THROTTLE
+    assert "large background request" in decision.reason
+    assert decision.trace is not None
+    assert decision.trace.decision == DecisionType.THROTTLE
+    assert decision.trace.estimated_prompt_tokens == budget.max_context_tokens + 100
+    assert decision.trace.estimated_prompt_confidence == 0.8
