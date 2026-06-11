@@ -224,6 +224,10 @@ class PolicyTrace:
     final_juice_level: int | None = None
     shaped_context_tokens: int | None = None
     shaped_output_tokens: int | None = None
+    estimated_prompt_tokens: int | None = None
+    estimated_prompt_confidence: float | None = None
+    original_context_tokens: int | None = None
+    original_max_tokens: int | None = None
     summary: str = "policy trace initialized"
 
     def with_admission(
@@ -238,6 +242,10 @@ class PolicyTrace:
         queue_position: int | None,
         budget: JuiceBudget,
         summary: str,
+        estimated_prompt_tokens: int | None = None,
+        estimated_prompt_confidence: float | None = None,
+        original_context_tokens: int | None = None,
+        original_max_tokens: int | None = None,
     ) -> PolicyTrace:
         """Return a copy enriched with request admission context."""
 
@@ -259,6 +267,10 @@ class PolicyTrace:
             final_juice_level=budget.juice_level,
             shaped_context_tokens=budget.max_context_tokens,
             shaped_output_tokens=budget.max_output_tokens,
+            estimated_prompt_tokens=estimated_prompt_tokens,
+            estimated_prompt_confidence=estimated_prompt_confidence,
+            original_context_tokens=original_context_tokens,
+            original_max_tokens=original_max_tokens,
             summary=summary,
         )
 
@@ -276,6 +288,15 @@ class ClassificationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class TokenEstimationResult:
+    """Estimated token cost and breakdown for an incoming request."""
+
+    estimated_tokens: int
+    confidence: float
+    field_contribution: dict[str, int]
+
+
+@dataclass(frozen=True, slots=True)
 class RequestMetadata:
     """Normalized metadata used by policy and routing logic."""
 
@@ -290,6 +311,7 @@ class RequestMetadata:
     endpoint_name: str | None = None
     received_at: datetime = field(default_factory=utc_now)
     classification: ClassificationResult | None = None
+    token_estimation: TokenEstimationResult | None = None
 
     def header(self, name: str, default: str | None = None) -> str | None:
         return self.headers.get(name.lower(), default)

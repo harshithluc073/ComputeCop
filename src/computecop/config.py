@@ -95,6 +95,12 @@ class PolicyConfig(BaseModel):
     base_output_tokens: int = Field(default=2048, ge=32, le=32768)
     max_background_concurrency: int = Field(default=2, ge=1, le=32)
     max_foreground_concurrency: int = Field(default=4, ge=1, le=64)
+    chars_per_token_ratio: float = Field(
+        default=4.0,
+        ge=1.0,
+        le=20.0,
+        description="Average character-to-token ratio used for estimating request size.",
+    )
 
     @field_validator("ram_recover_percent")
     @classmethod
