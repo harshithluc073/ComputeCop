@@ -34,15 +34,9 @@ class AdmissionController:
         base_trace = pressure.trace
 
         estimated_tokens = (
-            metadata.token_estimation.estimated_tokens
-            if metadata.token_estimation
-            else None
+            metadata.token_estimation.estimated_tokens if metadata.token_estimation else None
         )
-        confidence = (
-            metadata.token_estimation.confidence
-            if metadata.token_estimation
-            else None
-        )
+        confidence = metadata.token_estimation.confidence if metadata.token_estimation else None
         original_ctx = metadata.original_context_tokens
         original_max = metadata.original_max_tokens
 

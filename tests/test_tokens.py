@@ -105,9 +105,7 @@ def test_estimator_tools_and_functions() -> None:
             },
             {"role": "tool", "content": "tool result content", "tool_call_id": "1"},
         ],
-        "tools": [
-            {"type": "function", "function": {"name": "test", "description": "test"}}
-        ],
+        "tools": [{"type": "function", "function": {"name": "test", "description": "test"}}],
     }
     res = estimator.estimate(payload)
     # Should detect tools definitions, tool calls, and responses under tool_payloads
