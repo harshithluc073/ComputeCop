@@ -16,6 +16,7 @@ from computecop.models import (
     WorkerState,
     to_jsonable,
 )
+from computecop.residency import ModelResidency, ModelResidencyTracker
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +82,7 @@ class RuntimeSnapshot:
     scheduler: SchedulerSnapshot = field(default_factory=SchedulerSnapshot)
     event_persistence: EventPersistenceSnapshot = field(default_factory=EventPersistenceSnapshot)
     recent_decisions: tuple[AdmissionDecision, ...] = field(default_factory=tuple)
+    model_residency: tuple[ModelResidency, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, object]:
         return cast(dict[str, object], to_jsonable(self))
@@ -101,6 +103,7 @@ class RuntimeStateStore:
         self._event_persistence = EventPersistenceSnapshot()
         self._recent_decisions: deque[AdmissionDecision] = deque(maxlen=recent_decision_limit)
         self._decision_by_correlation_id: dict[str, AdmissionDecision] = {}
+        self.residency_tracker = ModelResidencyTracker()
 
     async def update_telemetry(self, telemetry: TelemetrySample) -> None:
         async with self._lock:
@@ -170,4 +173,5 @@ class RuntimeStateStore:
                 scheduler=self._scheduler,
                 event_persistence=self._event_persistence,
                 recent_decisions=tuple(self._recent_decisions),
+                model_residency=tuple(self.residency_tracker.get_estimates()),
             )

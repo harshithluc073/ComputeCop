@@ -124,6 +124,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         interval_seconds=registry_config.health_watcher_interval_seconds,
         jitter_fraction=registry_config.health_watcher_jitter_fraction,
         enabled=registry_config.health_watcher_enabled,
+        residency_tracker=state.residency_tracker,
     )
     queue = AsyncRequestQueue(config.queue)
     queue.set_change_callback(state.update_queue)
@@ -154,6 +155,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
 
     async def update_runtime(sample):
         await state.update_telemetry(sample)
+        state.residency_tracker.update_from_telemetry(sample)
         await yield_controller.update(sample)
         pressure = policy.evaluate(sample)
         await state.set_policy_state(
@@ -426,6 +428,12 @@ async def _forward_upstream(
             family,
             requires_streaming=requires_streaming,
         )
+        if metadata.model:
+            runtime.state.residency_tracker.record_request(
+                metadata.model,
+                route.name,
+                metadata.request_class,
+            )
         if requires_streaming and route.supports_streaming:
             return StreamingResponse(
                 _tracked_stream(

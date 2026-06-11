@@ -17,6 +17,7 @@ from computecop.models import utc_now
 
 if TYPE_CHECKING:
     from computecop.endpoints import EndpointCapabilityRegistry
+    from computecop.residency import ModelResidencyTracker
     from computecop.upstream import UpstreamRouter
 
 
@@ -213,6 +214,7 @@ class EndpointHealthWatcher:
         interval_seconds: float = 15.0,
         jitter_fraction: float = 0.1,
         enabled: bool = True,
+        residency_tracker: ModelResidencyTracker | None = None,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError("interval_seconds must be positive")
@@ -223,6 +225,7 @@ class EndpointHealthWatcher:
         self._interval_seconds = interval_seconds
         self._jitter_fraction = jitter_fraction
         self._enabled = enabled
+        self._residency_tracker = residency_tracker
         self._stop_event = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._logger = get_logger("health.watcher")
@@ -257,6 +260,12 @@ class EndpointHealthWatcher:
 
         for route in self._router.routes.values():
             await self._registry.probe(route, force=True)
+
+        if self._residency_tracker is not None:
+            await self._residency_tracker.update_from_endpoints(
+                list(self._router.routes.values()),
+                self._router._client,
+            )
 
     async def _run(self) -> None:
         log_event(self._logger, logging.INFO, "endpoint health watcher started")
