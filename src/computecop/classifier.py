@@ -12,6 +12,7 @@ from computecop.models import (
     RequestPriority,
     new_correlation_id,
 )
+from computecop.tokens import RequestTokenEstimator
 
 BACKGROUND_HINT_HEADERS = {
     "x-computecop-background",
@@ -42,6 +43,7 @@ class RequestClassifier:
         headers: Mapping[str, str],
         body: Mapping[str, Any] | None = None,
         client_host: str | None = None,
+        chars_per_token_ratio: float = 4.0,
     ) -> RequestMetadata:
         normalized_headers = {key.lower(): str(value) for key, value in headers.items()}
         payload = body or {}
@@ -51,6 +53,7 @@ class RequestClassifier:
             or normalized_headers.get("x-request-id")
             or new_correlation_id()
         )
+        token_estimation = RequestTokenEstimator().estimate(payload, chars_per_token_ratio)
         return RequestMetadata(
             method=method.upper(),
             path=path,
@@ -62,6 +65,9 @@ class RequestClassifier:
             model=_extract_model(payload),
             endpoint_name=normalized_headers.get("x-computecop-endpoint"),
             classification=result,
+            token_estimation=token_estimation,
+            original_context_tokens=_extract_original_context_tokens(payload),
+            original_max_tokens=_extract_original_max_tokens(payload),
         )
 
     def _classify(
@@ -210,3 +216,39 @@ def _looks_like_chat_prompt(payload: Mapping[str, Any]) -> bool:
             return True
     prompt = payload.get("prompt")
     return isinstance(prompt, str) and prompt.strip() != ""
+
+
+def _extract_original_context_tokens(payload: Mapping[str, Any]) -> int | None:
+    options = payload.get("options")
+    if isinstance(options, Mapping) and "num_ctx" in options:
+        try:
+            return int(options["num_ctx"])
+        except (ValueError, TypeError):
+            pass
+    if "n_ctx" in payload:
+        try:
+            return int(payload["n_ctx"])
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def _extract_original_max_tokens(payload: Mapping[str, Any]) -> int | None:
+    for key in ("max_tokens", "max_completion_tokens"):
+        if key in payload:
+            try:
+                return int(payload[key])
+            except (ValueError, TypeError):
+                pass
+    options = payload.get("options")
+    if isinstance(options, Mapping) and "num_predict" in options:
+        try:
+            return int(options["num_predict"])
+        except (ValueError, TypeError):
+            pass
+    if "n_predict" in payload:
+        try:
+            return int(payload["n_predict"])
+        except (ValueError, TypeError):
+            pass
+    return None

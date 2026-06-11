@@ -312,6 +312,8 @@ class RequestMetadata:
     received_at: datetime = field(default_factory=utc_now)
     classification: ClassificationResult | None = None
     token_estimation: TokenEstimationResult | None = None
+    original_context_tokens: int | None = None
+    original_max_tokens: int | None = None
 
     def header(self, name: str, default: str | None = None) -> str | None:
         return self.headers.get(name.lower(), default)

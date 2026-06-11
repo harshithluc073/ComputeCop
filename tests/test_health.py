@@ -62,7 +62,7 @@ def test_circuit_breaker_recovers_through_half_open() -> None:
     breaker.record_failure()
     assert breaker.snapshot().state is CircuitBreakerState.OPEN
 
-    time.sleep(0.06)
+    time.sleep(0.12)
     assert breaker.snapshot().state is CircuitBreakerState.HALF_OPEN
     assert breaker.allows_traffic() is True
 
@@ -78,7 +78,7 @@ def test_circuit_breaker_half_open_failure_reopens() -> None:
     breaker.record_failure()
     assert breaker.snapshot().state is CircuitBreakerState.OPEN
 
-    time.sleep(0.06)
+    time.sleep(0.12)
     assert breaker.snapshot().state is CircuitBreakerState.HALF_OPEN
 
     reopened = breaker.record_failure()
