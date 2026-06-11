@@ -409,7 +409,11 @@ async def _forward_upstream(
     family: str,
     body: Any,
 ) -> Response:
-    shaped_body = _shape_body(family, body, decision.budget) if isinstance(body, dict) else body
+    shaping_headers: dict[str, str] = {}
+    if isinstance(body, dict):
+        shaped_body, shaping_headers = _shape_body(family, body, decision.budget)
+    else:
+        shaped_body = body
     headers = dict(request.headers)
     headers["x-computecop-correlation-id"] = metadata.correlation_id
     headers["x-computecop-juice-level"] = str(decision.budget.juice_level)
@@ -438,6 +442,7 @@ async def _forward_upstream(
                 media_type="text/event-stream",
                 headers={
                     **decision_headers(decision),
+                    **shaping_headers,
                 },
             )
         upstream = await runtime.upstream.request(
@@ -473,6 +478,7 @@ async def _forward_upstream(
 
     response_headers = dict(upstream.headers)
     response_headers.update(decision_headers(decision))
+    response_headers.update(shaping_headers)
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,
@@ -488,7 +494,11 @@ async def _json_body(request: Request) -> Any:
         return None
 
 
-def _shape_body(family: str, body: dict[str, Any], budget) -> dict[str, Any]:
+def _shape_body(
+    family: str,
+    body: dict[str, Any],
+    budget,
+) -> tuple[dict[str, Any], dict[str, str]]:
     if family == "ollama":
         return _shape_ollama_body(body, budget)
     if family == "llama_cpp":
@@ -496,53 +506,155 @@ def _shape_body(family: str, body: dict[str, Any], budget) -> dict[str, Any]:
     return _shape_openai_body(body, budget)
 
 
-def _shape_openai_body(body: dict[str, Any], budget) -> dict[str, Any]:
+def _shape_openai_body(
+    body: dict[str, Any],
+    budget,
+) -> tuple[dict[str, Any], dict[str, str]]:
     shaped = dict(body)
+    shaping_headers = {"x-computecop-budget-shaped": "false"}
+
+    original_max = None
     for key in ("max_tokens", "max_completion_tokens"):
         if key in shaped:
-            shaped[key] = min(int(shaped[key]), budget.max_output_tokens)
+            try:
+                original_max = int(shaped[key])
+            except (ValueError, TypeError):
+                pass
+            if original_max is not None:
+                shaped[key] = min(original_max, budget.max_output_tokens)
+            else:
+                shaped[key] = budget.max_output_tokens
+
     if "max_tokens" not in shaped and "max_completion_tokens" not in shaped:
         shaped["max_tokens"] = budget.max_output_tokens
-    metadata = dict(shaped.get("metadata") or {})
-    metadata["computecop_juice_level"] = budget.juice_level
-    metadata["computecop_context_budget"] = budget.max_context_tokens
-    shaped["metadata"] = metadata
-    return shaped
+
+    if original_max is not None and original_max > budget.max_output_tokens:
+        shaping_headers["x-computecop-budget-shaped"] = "true"
+        shaping_headers["x-computecop-original-max-tokens"] = str(original_max)
+        shaping_headers["x-computecop-shaped-max-tokens"] = str(budget.max_output_tokens)
+
+    metadata_dict = dict(shaped.get("metadata") or {})
+    metadata_dict["computecop_juice_level"] = budget.juice_level
+    metadata_dict["computecop_context_budget"] = budget.max_context_tokens
+    shaped["metadata"] = metadata_dict
+
+    return shaped, shaping_headers
 
 
-def _shape_ollama_body(body: dict[str, Any], budget) -> dict[str, Any]:
+def _shape_ollama_body(
+    body: dict[str, Any],
+    budget,
+) -> tuple[dict[str, Any], dict[str, str]]:
     shaped = dict(body)
+    shaping_headers = {"x-computecop-budget-shaped": "false"}
     options = dict(shaped.get("options") or {})
+
+    original_ctx = None
     if "num_ctx" in options:
-        options["num_ctx"] = min(int(options["num_ctx"]), budget.max_context_tokens)
+        try:
+            original_ctx = int(options["num_ctx"])
+        except (ValueError, TypeError):
+            pass
+        if original_ctx is not None:
+            options["num_ctx"] = min(original_ctx, budget.max_context_tokens)
+        else:
+            options["num_ctx"] = budget.max_context_tokens
     else:
         options["num_ctx"] = budget.max_context_tokens
+
+    original_predict = None
     if "num_predict" in options:
-        options["num_predict"] = min(int(options["num_predict"]), budget.max_output_tokens)
+        try:
+            original_predict = int(options["num_predict"])
+        except (ValueError, TypeError):
+            pass
+        if original_predict is not None:
+            options["num_predict"] = min(original_predict, budget.max_output_tokens)
+        else:
+            options["num_predict"] = budget.max_output_tokens
     else:
         options["num_predict"] = budget.max_output_tokens
+
     shaped["options"] = options
     shaped["keep_alive"] = shaped.get("keep_alive", "5m" if budget.juice_level >= 50 else "30s")
-    return shaped
+
+    is_shaped = False
+    if original_ctx is not None and original_ctx > budget.max_context_tokens:
+        is_shaped = True
+        shaping_headers["x-computecop-original-context-tokens"] = str(original_ctx)
+        shaping_headers["x-computecop-shaped-context-tokens"] = str(budget.max_context_tokens)
+
+    if original_predict is not None and original_predict > budget.max_output_tokens:
+        is_shaped = True
+        shaping_headers["x-computecop-original-max-tokens"] = str(original_predict)
+        shaping_headers["x-computecop-shaped-max-tokens"] = str(budget.max_output_tokens)
+
+    if is_shaped:
+        shaping_headers["x-computecop-budget-shaped"] = "true"
+
+    return shaped, shaping_headers
 
 
-def _shape_llama_cpp_body(body: dict[str, Any], budget) -> dict[str, Any]:
+def _shape_llama_cpp_body(
+    body: dict[str, Any],
+    budget,
+) -> tuple[dict[str, Any], dict[str, str]]:
     shaped = dict(body)
+    shaping_headers = {"x-computecop-budget-shaped": "false"}
+
+    original_max = None
     if "n_predict" in shaped:
-        shaped["n_predict"] = min(int(shaped["n_predict"]), budget.max_output_tokens)
+        try:
+            original_max = int(shaped["n_predict"])
+        except (ValueError, TypeError):
+            pass
+        if original_max is not None:
+            shaped["n_predict"] = min(original_max, budget.max_output_tokens)
+        else:
+            shaped["n_predict"] = budget.max_output_tokens
     elif "max_tokens" in shaped:
-        shaped["max_tokens"] = min(int(shaped["max_tokens"]), budget.max_output_tokens)
+        try:
+            original_max = int(shaped["max_tokens"])
+        except (ValueError, TypeError):
+            pass
+        if original_max is not None:
+            shaped["max_tokens"] = min(original_max, budget.max_output_tokens)
+        else:
+            shaped["max_tokens"] = budget.max_output_tokens
     else:
         shaped["n_predict"] = budget.max_output_tokens
 
+    original_ctx = None
     if "n_ctx" in shaped:
-        shaped["n_ctx"] = min(int(shaped["n_ctx"]), budget.max_context_tokens)
+        try:
+            original_ctx = int(shaped["n_ctx"])
+        except (ValueError, TypeError):
+            pass
+        if original_ctx is not None:
+            shaped["n_ctx"] = min(original_ctx, budget.max_context_tokens)
+        else:
+            shaped["n_ctx"] = budget.max_context_tokens
     else:
         shaped["n_ctx"] = budget.max_context_tokens
 
     cache_prompt = budget.juice_level >= 35
     shaped["cache_prompt"] = bool(shaped.get("cache_prompt", cache_prompt))
-    return shaped
+
+    is_shaped = False
+    if original_ctx is not None and original_ctx > budget.max_context_tokens:
+        is_shaped = True
+        shaping_headers["x-computecop-original-context-tokens"] = str(original_ctx)
+        shaping_headers["x-computecop-shaped-context-tokens"] = str(budget.max_context_tokens)
+
+    if original_max is not None and original_max > budget.max_output_tokens:
+        is_shaped = True
+        shaping_headers["x-computecop-original-max-tokens"] = str(original_max)
+        shaping_headers["x-computecop-shaped-max-tokens"] = str(budget.max_output_tokens)
+
+    if is_shaped:
+        shaping_headers["x-computecop-budget-shaped"] = "true"
+
+    return shaped, shaping_headers
 
 
 def _select_route(

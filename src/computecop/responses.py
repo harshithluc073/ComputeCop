@@ -21,6 +21,14 @@ def decision_headers(decision: AdmissionDecision) -> dict[str, str]:
     }
     if decision.trace is not None:
         headers["x-computecop-trace-id"] = decision.trace.trace_id
+        if decision.trace.estimated_prompt_tokens is not None:
+            headers["x-computecop-prompt-tokens-estimated"] = str(
+                decision.trace.estimated_prompt_tokens
+            )
+        if decision.trace.estimated_prompt_confidence is not None:
+            headers["x-computecop-prompt-tokens-confidence"] = (
+                f"{decision.trace.estimated_prompt_confidence:.1f}"
+            )
     if decision.retry_after_seconds is not None:
         headers["retry-after"] = str(max(1, int(decision.retry_after_seconds)))
     if decision.classification is not None:

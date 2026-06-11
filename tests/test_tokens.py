@@ -18,11 +18,11 @@ def test_estimator_empty_or_none() -> None:
 
 def test_estimator_prompt_heuristics() -> None:
     estimator = RequestTokenEstimator()
-    # "hello" is 5 chars. At ratio=4.0, round(5/4) = 1 token
+    # "hello" is 5 chars. At ratio=4.0, math.ceil(5/4) = 2 tokens
     res = estimator.estimate({"prompt": "hello"})
-    assert res.estimated_tokens == 1
+    assert res.estimated_tokens == 2
     assert res.confidence == 0.8
-    assert res.field_contribution == {"prompt": 1}
+    assert res.field_contribution == {"prompt": 2}
 
     # Custom ratio: 1.0
     res_custom = estimator.estimate({"prompt": "hello"}, chars_per_token_ratio=1.0)
@@ -48,11 +48,11 @@ def test_estimator_messages_heuristics() -> None:
             {"role": "user", "content": "Hello!"},
         ]
     }
-    # 28 chars + 6 chars = 34 chars. 34/4 = 8.5. round(8.5) = 8.
+    # 28 chars + 6 chars = 34 chars. 34/4 = 8.5. math.ceil(8.5) = 9.
     res = estimator.estimate(payload)
-    assert res.estimated_tokens == 8
+    assert res.estimated_tokens == 9
     assert res.confidence == 0.8
-    assert res.field_contribution == {"messages": 8}
+    assert res.field_contribution == {"messages": 9}
 
 
 def test_estimator_rich_messages_and_images() -> None:

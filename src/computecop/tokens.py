@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -47,7 +48,7 @@ class RequestTokenEstimator:
                 prompt_chars += len(val)
 
         if prompt_chars > 0:
-            contributions["prompt"] = round(prompt_chars / chars_per_token)
+            contributions["prompt"] = math.ceil(prompt_chars / chars_per_token)
 
         # 2. Messages (OpenAI chat completions, Ollama chat, llama.cpp chat completions)
         messages_chars = 0
@@ -99,7 +100,7 @@ class RequestTokenEstimator:
                         has_rich_data = True
 
         if messages_chars > 0:
-            contributions["messages"] = round(messages_chars / chars_per_token)
+            contributions["messages"] = math.ceil(messages_chars / chars_per_token)
 
         # 3. Tool and function definitions at root
         for tool_key in ("tools", "functions", "tool_choice"):
@@ -110,7 +111,7 @@ class RequestTokenEstimator:
                     has_rich_data = True
 
         if tool_chars > 0:
-            contributions["tool_payloads"] = round(tool_chars / chars_per_token)
+            contributions["tool_payloads"] = math.ceil(tool_chars / chars_per_token)
 
         # 4. Root level images (Ollama root images parameter)
         root_images = body.get("images")

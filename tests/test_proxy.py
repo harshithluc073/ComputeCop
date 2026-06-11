@@ -91,9 +91,43 @@ async def test_openai_chat_shapes_budget(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.headers["x-computecop-decision"] == "allow"
     assert "x-computecop-trace-id" in response.headers
+    assert response.headers["x-computecop-budget-shaped"] == "true"
+    assert response.headers["x-computecop-original-max-tokens"] == "9999"
+    assert response.headers["x-computecop-shaped-max-tokens"] == "2048"
+    assert response.headers["x-computecop-prompt-tokens-estimated"] == "1"
+    assert response.headers["x-computecop-prompt-tokens-confidence"] == "0.8"
     assert fake.last_json is not None
     assert fake.last_json["max_tokens"] <= 2048
     assert fake.last_json["metadata"]["computecop_juice_level"] == 100
+
+
+@pytest.mark.asyncio
+async def test_ollama_shapes_budget(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    fake = FakeUpstream()
+    app.state.runtime.upstream = fake
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/chat",
+            json={
+                "model": "local",
+                "messages": [{"role": "user", "content": "hello world"}],
+                "options": {
+                    "num_ctx": 16384,
+                    "num_predict": 4096,
+                },
+            },
+        )
+    assert response.status_code == 200
+    assert response.headers["x-computecop-budget-shaped"] == "true"
+    assert response.headers["x-computecop-original-context-tokens"] == "16384"
+    assert response.headers["x-computecop-shaped-context-tokens"] == "8192"
+    assert response.headers["x-computecop-original-max-tokens"] == "4096"
+    assert response.headers["x-computecop-shaped-max-tokens"] == "2048"
+    assert response.headers["x-computecop-prompt-tokens-estimated"] == "3"
+    assert response.headers["x-computecop-prompt-tokens-confidence"] == "0.8"
 
 
 @pytest.mark.asyncio
