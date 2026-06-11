@@ -36,6 +36,7 @@ class ModelResidency:
     last_accessed_at: datetime | None = None
     estimated_memory_bytes: int | None = None
     inferred_from: str = "default"
+    last_request_class: RequestClass | None = None
 
 
 class ModelResidencyTracker:
@@ -284,6 +285,7 @@ class ModelResidencyTracker:
                 last_accessed_at=last_ts,
                 estimated_memory_bytes=est_size,
                 inferred_from=inferred_from,
+                last_request_class=req_class,
             )
 
         return list(estimates.values())

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import httpx
 
 from computecop.logging import get_logger, log_event
-from computecop.models import EndpointKind, EndpointRoute
+from computecop.models import EndpointKind, EndpointRoute, RequestClass, utc_now
+from computecop.residency import ModelResidency, ResidencyStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +50,14 @@ class OffloadManager:
                     detail=result.detail,
                 )
         return tuple(results)
+
+    def rank_candidates(
+        self,
+        residency_estimates: list[ModelResidency],
+        hot_threshold_seconds: float = 60.0,
+    ) -> list[ModelResidency]:
+        """Rank eviction candidates from best to worst/protected."""
+        return rank_eviction_candidates(residency_estimates, hot_threshold_seconds)
 
 
 class BaseOffloadAdapter:
@@ -176,3 +186,52 @@ def _slot_id(slot: object) -> int | None:
             except (TypeError, ValueError):
                 return None
     return None
+
+
+def rank_eviction_candidates(
+    residency_estimates: list[ModelResidency],
+    hot_threshold_seconds: float = 60.0,
+) -> list[ModelResidency]:
+    """Rank models from best eviction candidate (first) to worst/protected candidate (last)."""
+
+    now = utc_now()
+
+    def get_sort_key(est: ModelResidency) -> tuple[bool, int, int, datetime, int, float]:
+        # 1. Protected status (active foreground model)
+        is_protected = False
+        if est.last_request_class == RequestClass.USER_PROMPT and est.last_accessed_at is not None:
+            age = (now - est.last_accessed_at).total_seconds()
+            if age < hot_threshold_seconds:
+                is_protected = True
+
+        # 2. Status priority (EVICTABLE = 0, WARM = 1, HOT = 2, COLD = 3)
+        status_priority = 3
+        if est.status == ResidencyStatus.EVICTABLE:
+            status_priority = 0
+        elif est.status == ResidencyStatus.WARM:
+            status_priority = 1
+        elif est.status == ResidencyStatus.HOT:
+            status_priority = 2
+        elif est.status == ResidencyStatus.COLD:
+            status_priority = 3
+
+        # 3. Request class priority (BACKGROUND = 0, UNKNOWN/None = 1, USER_PROMPT = 2)
+        class_priority = 1
+        if est.last_request_class == RequestClass.BACKGROUND_REQUEST:
+            class_priority = 0
+        elif est.last_request_class == RequestClass.USER_PROMPT:
+            class_priority = 2
+
+        # 4. Access recency (older/None first)
+        access_time = est.last_accessed_at or datetime.min.replace(tzinfo=now.tzinfo)
+
+        # 5. Estimated memory size (larger size first -> negative of size)
+        size = est.estimated_memory_bytes or 0
+        neg_size = -size
+
+        # 6. Confidence (higher confidence first -> negative of confidence)
+        neg_conf = -est.confidence
+
+        return (is_protected, status_priority, class_priority, access_time, neg_size, neg_conf)
+
+    return sorted(residency_estimates, key=get_sort_key)
