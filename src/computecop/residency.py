@@ -225,6 +225,7 @@ class ModelResidencyTracker:
         for model, endpoint in all_keys:
             key = (model, endpoint)
             last_ts = self._last_accessed.get(key)
+            req_class = self._last_request_class.get(key)
             obs = self._endpoint_observations.get(key)
 
             confidence = 0.0
@@ -269,7 +270,6 @@ class ModelResidencyTracker:
                 status = ResidencyStatus.WARM
 
             if status == ResidencyStatus.WARM:
-                req_class = self._last_request_class.get(key)
                 if req_class == RequestClass.BACKGROUND_REQUEST:
                     status = ResidencyStatus.EVICTABLE
                 elif last_ts and (now - last_ts).total_seconds() >= self.hot_threshold_seconds:
