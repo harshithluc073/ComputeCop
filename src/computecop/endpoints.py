@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from computecop.health import CircuitBreakerRegistry, CircuitBreakerStatus
+from computecop.health import CircuitBreakerRegistry, CircuitBreakerState, CircuitBreakerStatus
 from computecop.models import EndpointKind, EndpointRoute, utc_now
 from computecop.upstream import HealthProbe, UpstreamRouter
 
@@ -185,6 +185,15 @@ class EndpointCapabilityRegistry:
         """Record a failed upstream request for circuit breaker state."""
 
         return self._circuit_breakers.record_failure(endpoint_name)
+
+    def open_circuit_breaker_count(self) -> int:
+        """Return how many endpoints currently have an open circuit breaker."""
+
+        return sum(
+            1
+            for name in self._router.routes
+            if self._circuit_breakers.snapshot(name).state is CircuitBreakerState.OPEN
+        )
 
     def capabilities_for(self, route: EndpointRoute) -> EndpointCapabilities:
         """Return static capabilities derived from endpoint kind and config."""

@@ -10,7 +10,7 @@ from time import monotonic
 from typing import Generic, TypeVar
 
 from computecop.config import PolicyConfig, QueueConfig
-from computecop.models import RequestClass, RequestMetadata, RequestPriority, SystemState
+from computecop.models import RequestClass, RequestMetadata, RequestPriority
 from computecop.policy import PressureReport
 from computecop.request_queue import AsyncRequestQueue
 from computecop.state import SchedulerSnapshot
@@ -85,6 +85,7 @@ class AdaptiveScheduler:
         self.policy_config = policy_config
         self.queue_config = queue_config
         self._condition = asyncio.Condition()
+        self._effective_foreground = policy_config.max_foreground_concurrency
         self._effective_background = policy_config.max_background_concurrency
         self._running_foreground = 0
         self._running_background = 0
@@ -112,20 +113,23 @@ class AdaptiveScheduler:
         self._change_callback = callback
 
     async def update_pressure(self, report: PressureReport) -> None:
-        """Shrink or restore background capacity based on live pressure."""
+        """Shrink or restore scheduler capacity based on live pressure."""
 
+        limits = report.concurrency_limits
         async with self._condition:
-            self._effective_background = effective_background_slots(report, self.policy_config)
+            self._effective_foreground = limits.max_foreground
+            self._effective_background = limits.max_background
             self._condition.notify_all()
 
     def snapshot(self) -> SchedulerSnapshot:
         """Return the current scheduler capacity snapshot."""
 
-        reserved = self.policy_config.max_foreground_concurrency
+        reserved = self._effective_foreground
         total_running = self._running_foreground + self._running_background
         spare_slots = max(0, self.total_capacity - total_running)
         return SchedulerSnapshot(
             reserved_foreground_slots=reserved,
+            effective_foreground_slots=self._effective_foreground,
             max_background_slots=self.policy_config.max_background_concurrency,
             effective_background_slots=self._effective_background,
             running_foreground=self._running_foreground,
@@ -211,7 +215,7 @@ class AdaptiveScheduler:
         async with self._condition:
             while True:
                 if foreground:
-                    if self._running_foreground < self.policy_config.max_foreground_concurrency:
+                    if self._running_foreground < self._effective_foreground:
                         self._running_foreground += 1
                         return
                 elif self._can_acquire_background_locked():
@@ -248,14 +252,7 @@ class AdaptiveScheduler:
 def effective_background_slots(report: PressureReport, policy_config: PolicyConfig) -> int:
     """Compute the background slot limit for a pressure report."""
 
-    configured = policy_config.max_background_concurrency
-    if report.yield_active:
-        return 0
-    if report.system_state == SystemState.PRESSURED:
-        return max(1, configured // 2)
-    if report.system_state == SystemState.RECOVERING:
-        return max(1, int(configured * 0.75))
-    return configured
+    return report.concurrency_limits.max_background
 
 
 def _is_foreground_priority(priority: RequestPriority) -> bool:

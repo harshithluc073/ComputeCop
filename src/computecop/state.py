@@ -7,6 +7,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import cast
 
+from computecop.concurrency import ConcurrencyGovernorSnapshot
 from computecop.models import (
     AdmissionDecision,
     DecisionType,
@@ -55,6 +56,7 @@ class SchedulerSnapshot:
     """Adaptive scheduler capacity and execution counters."""
 
     reserved_foreground_slots: int = 4
+    effective_foreground_slots: int = 4
     max_background_slots: int = 2
     effective_background_slots: int = 2
     running_foreground: int = 0
@@ -80,6 +82,7 @@ class RuntimeSnapshot:
     yield_reason: str | None
     queue: QueueSnapshot
     scheduler: SchedulerSnapshot = field(default_factory=SchedulerSnapshot)
+    concurrency: ConcurrencyGovernorSnapshot | None = None
     event_persistence: EventPersistenceSnapshot = field(default_factory=EventPersistenceSnapshot)
     recent_decisions: tuple[AdmissionDecision, ...] = field(default_factory=tuple)
     model_residency: tuple[ModelResidency, ...] = field(default_factory=tuple)
@@ -100,6 +103,7 @@ class RuntimeStateStore:
         self._yield_reason: str | None = None
         self._queue = QueueSnapshot()
         self._scheduler = SchedulerSnapshot()
+        self._concurrency: ConcurrencyGovernorSnapshot | None = None
         self._event_persistence = EventPersistenceSnapshot()
         self._recent_decisions: deque[AdmissionDecision] = deque(maxlen=recent_decision_limit)
         self._decision_by_correlation_id: dict[str, AdmissionDecision] = {}
@@ -130,6 +134,10 @@ class RuntimeStateStore:
     async def update_scheduler(self, scheduler: SchedulerSnapshot) -> None:
         async with self._lock:
             self._scheduler = scheduler
+
+    async def update_concurrency(self, concurrency: ConcurrencyGovernorSnapshot) -> None:
+        async with self._lock:
+            self._concurrency = concurrency
 
     async def set_event_persistence(self, *, enabled: bool, disabled_reason: str | None) -> None:
         async with self._lock:
@@ -171,6 +179,7 @@ class RuntimeStateStore:
                 yield_reason=self._yield_reason,
                 queue=self._queue,
                 scheduler=self._scheduler,
+                concurrency=self._concurrency,
                 event_persistence=self._event_persistence,
                 recent_decisions=tuple(self._recent_decisions),
                 model_residency=tuple(self.residency_tracker.get_estimates()),

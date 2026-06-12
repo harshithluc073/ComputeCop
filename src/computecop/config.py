@@ -95,6 +95,18 @@ class PolicyConfig(BaseModel):
     base_output_tokens: int = Field(default=2048, ge=32, le=32768)
     max_background_concurrency: int = Field(default=2, ge=1, le=32)
     max_foreground_concurrency: int = Field(default=4, ge=1, le=64)
+    max_endpoint_foreground_concurrency: int = Field(
+        default=2,
+        ge=1,
+        le=32,
+        description="Maximum concurrent foreground requests per upstream endpoint.",
+    )
+    max_endpoint_background_concurrency: int = Field(
+        default=1,
+        ge=1,
+        le=32,
+        description="Maximum concurrent background requests per upstream endpoint.",
+    )
     chars_per_token_ratio: float = Field(
         default=4.0,
         ge=1.0,

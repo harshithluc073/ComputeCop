@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from computecop.config import PolicyConfig
 from computecop.models import (
@@ -20,6 +20,17 @@ from computecop.platform import HostMemoryProfile
 
 
 @dataclass(frozen=True, slots=True)
+class ConcurrencyLimits:
+    """Recommended global and per-endpoint concurrency ceilings after pressure shaping."""
+
+    max_foreground: int
+    max_background: int
+    max_endpoint_foreground: int
+    max_endpoint_background: int
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class PressureReport:
     """Policy evaluation output for a telemetry snapshot."""
 
@@ -33,6 +44,7 @@ class PressureReport:
     memory_budget_scale: float
     total_ram_gb: float | None
     trace: PolicyTrace
+    concurrency_limits: ConcurrencyLimits
 
 
 class JuicePolicyEngine:
@@ -41,11 +53,16 @@ class JuicePolicyEngine:
     def __init__(self, config: PolicyConfig) -> None:
         self.config = config
 
-    def evaluate(self, telemetry: TelemetrySample | None) -> PressureReport:
+    def evaluate(
+        self,
+        telemetry: TelemetrySample | None,
+        *,
+        open_circuit_breaker_count: int = 0,
+    ) -> PressureReport:
         """Evaluate global system pressure."""
 
         if telemetry is None:
-            return PressureReport(
+            report = PressureReport(
                 system_state=SystemState.NORMAL,
                 global_juice_level=self.config.background_base_juice_level,
                 yield_active=False,
@@ -68,6 +85,12 @@ class JuicePolicyEngine:
                     ),
                     summary="telemetry unavailable; using conservative defaults",
                 ),
+                concurrency_limits=_default_concurrency_limits(self.config),
+            )
+            return _with_concurrency_limits(
+                report,
+                self.config,
+                open_circuit_breaker_count=open_circuit_breaker_count,
             )
 
         memory = HostMemoryProfile(
@@ -313,7 +336,7 @@ class JuicePolicyEngine:
             summary=summary,
         )
 
-        return PressureReport(
+        report = PressureReport(
             system_state=system_state,
             global_juice_level=global_juice,
             yield_active=yield_reason is not None,
@@ -324,6 +347,12 @@ class JuicePolicyEngine:
             memory_budget_scale=memory.budget_scale,
             total_ram_gb=memory.total_gb,
             trace=trace,
+            concurrency_limits=_default_concurrency_limits(self.config),
+        )
+        return _with_concurrency_limits(
+            report,
+            self.config,
+            open_circuit_breaker_count=open_circuit_breaker_count,
         )
 
     def budget_for(self, request_class: RequestClass, report: PressureReport) -> JuiceBudget:
@@ -360,6 +389,100 @@ class JuicePolicyEngine:
         if state == ThermalState.WARM:
             return 10
         return 0
+
+
+def _default_concurrency_limits(policy_config: PolicyConfig) -> ConcurrencyLimits:
+    return ConcurrencyLimits(
+        max_foreground=policy_config.max_foreground_concurrency,
+        max_background=policy_config.max_background_concurrency,
+        max_endpoint_foreground=policy_config.max_endpoint_foreground_concurrency,
+        max_endpoint_background=policy_config.max_endpoint_background_concurrency,
+        reasons=("configured concurrency ceilings",),
+    )
+
+
+def compute_concurrency_limits(
+    report: PressureReport,
+    policy_config: PolicyConfig,
+    *,
+    open_circuit_breaker_count: int = 0,
+) -> ConcurrencyLimits:
+    """Compute recommended concurrency limits from pressure and breaker state."""
+
+    reasons: list[str] = []
+    foreground = policy_config.max_foreground_concurrency
+    background = policy_config.max_background_concurrency
+    endpoint_foreground = policy_config.max_endpoint_foreground_concurrency
+    endpoint_background = policy_config.max_endpoint_background_concurrency
+
+    if report.yield_active:
+        background = 0
+        foreground = max(1, foreground // 2)
+        endpoint_background = 0
+        endpoint_foreground = max(1, endpoint_foreground // 2)
+        reasons.append("RAM yield active; background concurrency disabled")
+    elif report.system_state == SystemState.PRESSURED:
+        background = max(1, background // 2)
+        foreground = max(1, (foreground * 3) // 4)
+        endpoint_background = max(1, endpoint_background // 2)
+        endpoint_foreground = max(1, (endpoint_foreground * 3) // 4)
+        reasons.append("host pressured; concurrency reduced")
+    elif report.system_state == SystemState.RECOVERING:
+        background = max(1, int(background * 0.75))
+        endpoint_background = max(1, int(endpoint_background * 0.75))
+        reasons.append("host recovering; background concurrency reduced")
+
+    triggered_rules = {
+        rule.name for rule in report.trace.rules if rule.status is PolicyRuleStatus.TRIGGERED
+    }
+
+    if "swap_pressure" in triggered_rules:
+        background = max(0 if report.yield_active else 1, background // 2)
+        endpoint_background = max(0 if report.yield_active else 1, endpoint_background // 2)
+        reasons.append("swap pressure elevated; concurrency reduced")
+
+    if "thermal_pressure" in triggered_rules:
+        foreground = max(1, foreground - 1)
+        background = max(0 if report.yield_active else 1, background - 1)
+        endpoint_foreground = max(1, endpoint_foreground - 1)
+        endpoint_background = max(0 if report.yield_active else 1, endpoint_background - 1)
+        reasons.append("thermal pressure elevated; concurrency reduced")
+
+    if open_circuit_breaker_count > 0:
+        endpoint_foreground = max(1, endpoint_foreground - open_circuit_breaker_count)
+        endpoint_background = max(
+            0 if report.yield_active else 1,
+            endpoint_background - open_circuit_breaker_count,
+        )
+        reasons.append(
+            f"{open_circuit_breaker_count} endpoint circuit breaker(s) open; "
+            "per-endpoint concurrency reduced"
+        )
+
+    if not reasons:
+        reasons.append("configured concurrency ceilings")
+
+    return ConcurrencyLimits(
+        max_foreground=foreground,
+        max_background=background,
+        max_endpoint_foreground=endpoint_foreground,
+        max_endpoint_background=endpoint_background,
+        reasons=tuple(reasons),
+    )
+
+
+def _with_concurrency_limits(
+    report: PressureReport,
+    policy_config: PolicyConfig,
+    *,
+    open_circuit_breaker_count: int,
+) -> PressureReport:
+    limits = compute_concurrency_limits(
+        report,
+        policy_config,
+        open_circuit_breaker_count=open_circuit_breaker_count,
+    )
+    return replace(report, concurrency_limits=limits)
 
 
 def _rule(
