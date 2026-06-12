@@ -119,6 +119,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         failure_threshold=registry_config.circuit_breaker_failure_threshold,
         cooldown_seconds=registry_config.circuit_breaker_cooldown_seconds,
         half_open_successes=registry_config.circuit_breaker_half_open_successes,
+        residency_tracker=state.residency_tracker,
     )
     health_watcher = EndpointHealthWatcher(
         endpoint_registry,
@@ -436,48 +437,59 @@ async def _forward_upstream(
     headers["x-computecop-juice-level"] = str(decision.budget.juice_level)
 
     foreground = is_foreground_metadata(metadata)
-    route = None
-    capacity_acquired = False
-    try:
-        requires_streaming = isinstance(shaped_body, dict) and shaped_body.get("stream") is True
-        route = _select_route(
-            runtime,
-            metadata.endpoint_name,
-            family,
-            requires_streaming=requires_streaming,
-        )
-        if metadata.model:
-            runtime.state.residency_tracker.record_request(
-                metadata.model,
-                route.name,
-                metadata.request_class,
-            )
-        await runtime.concurrency_governor.acquire(route.name, foreground=foreground)
-        capacity_acquired = True
-        if requires_streaming and route.supports_streaming:
-            return StreamingResponse(
-                _tracked_stream(
-                    runtime=runtime,
-                    route_name=route.name,
-                    stream=runtime.upstream.stream(
-                        route,
-                        method=request.method,
-                        path=upstream_path,
-                        headers=headers,
-                        json_body=shaped_body,
-                    ),
-                    endpoint_release=lambda: runtime.concurrency_governor.release(
-                        route.name,
-                        foreground=foreground,
-                    ),
-                ),
-                media_type="text/event-stream",
-                headers={
-                    **decision_headers(decision),
-                    **shaping_headers,
-                },
-            )
+    requires_streaming = isinstance(shaped_body, dict) and shaped_body.get("stream") is True
+
+    def make_release_capacity(route_name: str, fg: bool) -> Callable[[], Awaitable[None]]:
+        async def release_capacity() -> None:
+            await runtime.concurrency_governor.release(route_name, foreground=fg)
+        return release_capacity
+    
+    can_retry = not requires_streaming and not metadata.endpoint_name
+    failed_endpoints: set[str] = set()
+
+    while True:
+        route = None
+        capacity_acquired = False
         try:
+            route = _select_route(
+                runtime,
+                metadata.endpoint_name,
+                family,
+                model=metadata.model,
+                requires_streaming=requires_streaming,
+                exclude=failed_endpoints,
+            )
+            if metadata.model:
+                runtime.state.residency_tracker.record_request(
+                    metadata.model,
+                    route.name,
+                    metadata.request_class,
+                )
+            await runtime.concurrency_governor.acquire(route.name, foreground=foreground)
+            capacity_acquired = True
+
+            if requires_streaming and route.supports_streaming:
+                return StreamingResponse(
+                    _tracked_stream(
+                        runtime=runtime,
+                        route_name=route.name,
+                        stream=runtime.upstream.stream(
+                            route,
+                            method=request.method,
+                            path=upstream_path,
+                            headers=headers,
+                            json_body=shaped_body,
+                        ),
+                        endpoint_release=make_release_capacity(route.name, foreground),
+                    ),
+                    media_type="text/event-stream",
+                    headers={
+                        **decision_headers(decision),
+                        **shaping_headers,
+                    },
+                )
+
+            # Non-streaming request
             upstream = await runtime.upstream.request(
                 route,
                 method=request.method,
@@ -486,43 +498,69 @@ async def _forward_upstream(
                 json_body=shaped_body,
             )
             runtime.endpoint_registry.record_upstream_success(route.name)
-        finally:
             await runtime.concurrency_governor.release(route.name, foreground=foreground)
             capacity_acquired = False
-    except UpstreamFailure as exc:
-        if capacity_acquired and route is not None:
-            await runtime.concurrency_governor.release(route.name, foreground=foreground)
-        if exc.endpoint:
-            runtime.endpoint_registry.record_upstream_failure(exc.endpoint)
-        await runtime.event_store.append(
-            "upstream.failure",
-            correlation_id=metadata.correlation_id,
-            category=exc.category.value,
-            status_code=exc.status_code,
-            endpoint=exc.endpoint or metadata.endpoint_name,
-            retryable=exc.retryable,
-            path=upstream_path,
-        )
-        return error_response(
-            status_code=exc.status_code,
-            message=exc.message,
-            error_type=f"computecop_upstream_{exc.category.value}",
-            correlation_id=metadata.correlation_id,
-            retry_after_seconds=(
-                runtime.config.queue.background_retry_after_seconds if exc.retryable else None
-            ),
-            extra={"upstream_failure": exc.to_dict()},
-        )
 
-    response_headers = dict(upstream.headers)
-    response_headers.update(decision_headers(decision))
-    response_headers.update(shaping_headers)
-    return Response(
-        content=upstream.content,
-        status_code=upstream.status_code,
-        headers=response_headers,
-        media_type=response_headers.get("content-type"),
-    )
+            response_headers = dict(upstream.headers)
+            response_headers.update(decision_headers(decision))
+            response_headers.update(shaping_headers)
+            return Response(
+                content=upstream.content,
+                status_code=upstream.status_code,
+                headers=response_headers,
+                media_type=response_headers.get("content-type"),
+            )
+
+        except UpstreamFailure as exc:
+            # Release capacity for this endpoint if acquired
+            if capacity_acquired and route is not None:
+                await runtime.concurrency_governor.release(route.name, foreground=foreground)
+                capacity_acquired = False
+
+            # Record the failure for the circuit breaker of the specific endpoint
+            failed_endpoint_name = (
+                route.name
+                if route is not None
+                else (exc.endpoint or metadata.endpoint_name)
+            )
+            if failed_endpoint_name:
+                runtime.endpoint_registry.record_upstream_failure(failed_endpoint_name)
+
+            # Check if we can retry on another endpoint
+            if can_retry and exc.retryable and route is not None:
+                failed_endpoints.add(route.name)
+                await runtime.event_store.append(
+                    "upstream.failover",
+                    correlation_id=metadata.correlation_id,
+                    failed_endpoint=route.name,
+                    category=exc.category.value,
+                    status_code=exc.status_code,
+                )
+                continue
+
+            # Otherwise, log error event and return error response
+            await runtime.event_store.append(
+                "upstream.failure",
+                correlation_id=metadata.correlation_id,
+                category=exc.category.value,
+                status_code=exc.status_code,
+                endpoint=failed_endpoint_name or "none",
+                retryable=exc.retryable,
+                path=upstream_path,
+            )
+            return error_response(
+                status_code=exc.status_code,
+                message=exc.message,
+                error_type=f"computecop_upstream_{exc.category.value}",
+                correlation_id=metadata.correlation_id,
+                retry_after_seconds=(
+                    runtime.config.queue.background_retry_after_seconds if exc.retryable else None
+                ),
+                extra={"upstream_failure": exc.to_dict()},
+            )
+        finally:
+            if capacity_acquired and route is not None:
+                await runtime.concurrency_governor.release(route.name, foreground=foreground)
 
 
 async def _json_body(request: Request) -> Any:
@@ -700,10 +738,20 @@ def _select_route(
     endpoint_name: str | None,
     family: str,
     *,
+    model: str | None = None,
     requires_streaming: bool = False,
+    exclude: set[str] | None = None,
 ):
     if endpoint_name:
         route = runtime.upstream.route(endpoint_name)
+        if exclude and route.name in exclude:
+            raise UpstreamFailure(
+                f"explicit endpoint '{route.name}' failed and is excluded",
+                category=UpstreamFailureCategory.UNREACHABLE,
+                status_code=503,
+                endpoint=route.name,
+                retryable=True,
+            )
         if not runtime.endpoint_registry.allows_traffic(route.name):
             raise UpstreamFailure(
                 f"endpoint '{route.name}' circuit breaker is open",
@@ -716,28 +764,117 @@ def _select_route(
                     "GET /endpoints for circuit breaker status"
                 ),
             )
+        target_kind = resolve_api_family(family)
+        if target_kind is not None and route.kind != target_kind:
+            raise UpstreamFailure(
+                f"explicit endpoint '{route.name}' of kind '{route.kind.value}' "
+                f"is not compatible with requested family '{family}'",
+                category=UpstreamFailureCategory.MISCONFIGURED_ENDPOINT,
+                status_code=400,
+                endpoint=route.name,
+                retryable=False,
+            )
+        if requires_streaming and not route.supports_streaming:
+            raise UpstreamFailure(
+                f"explicit endpoint '{route.name}' does not support streaming",
+                category=UpstreamFailureCategory.MISCONFIGURED_ENDPOINT,
+                status_code=400,
+                endpoint=route.name,
+                retryable=False,
+            )
+        if model and not runtime.state.residency_tracker.is_model_compatible(model, route.name):
+            raise UpstreamFailure(
+                f"explicit endpoint '{route.name}' does not support model '{model}'",
+                category=UpstreamFailureCategory.MISCONFIGURED_ENDPOINT,
+                status_code=400,
+                endpoint=route.name,
+                retryable=False,
+            )
         return route
+
+    # If no explicit endpoint name, use compatibility-based routing
     selected = runtime.endpoint_registry.select_compatible(
         family=family,
+        model=model,
         requires_streaming=requires_streaming,
+        exclude=exclude,
     )
     if selected is not None:
         return selected
-    preferred = resolve_api_family(family)
-    if preferred is not None:
-        for route in runtime.upstream.routes.values():
-            if route.kind == preferred and runtime.endpoint_registry.allows_traffic(route.name):
-                return route
-    fallback = runtime.upstream.route(None)
-    if runtime.endpoint_registry.allows_traffic(fallback.name):
-        return fallback
+
+    # Diagnostics to return precise errors
+    target_kind = resolve_api_family(family)
+    if target_kind is None:
+        raise UpstreamFailure(
+            f"unknown API family '{family}'",
+            category=UpstreamFailureCategory.ROUTE_NOT_FOUND,
+            status_code=400,
+            endpoint=None,
+            retryable=False,
+        )
+
+    all_routes = list(runtime.upstream.routes.values())
+    if exclude:
+        all_routes = [r for r in all_routes if r.name not in exclude]
+        if not all_routes:
+            raise UpstreamFailure(
+                "all configured endpoints are excluded after failures",
+                category=UpstreamFailureCategory.UNREACHABLE,
+                status_code=503,
+                endpoint=None,
+                retryable=True,
+            )
+
+    family_routes = [r for r in all_routes if r.kind == target_kind]
+    if not family_routes:
+        known_families = {r.kind.value for r in all_routes}
+        kinds_str = ", ".join(sorted(known_families))
+        raise UpstreamFailure(
+            f"no configured endpoint supports API family '{family}', "
+            f"configured kinds: {kinds_str}",
+            category=UpstreamFailureCategory.ROUTE_NOT_FOUND,
+            status_code=400,
+            endpoint=None,
+            retryable=False,
+            remediation="configure an endpoint with the requested family in pyproject.toml",
+        )
+
+    stream_routes = [r for r in family_routes if not requires_streaming or r.supports_streaming]
+    if not stream_routes:
+        raise UpstreamFailure(
+            f"no endpoint for family '{family}' supports streaming requests",
+            category=UpstreamFailureCategory.MISCONFIGURED_ENDPOINT,
+            status_code=400,
+            endpoint=None,
+            retryable=False,
+        )
+
+    model_routes = stream_routes
+    if model:
+        model_routes = [
+            r for r in stream_routes
+            if runtime.state.residency_tracker.is_model_compatible(model, r.name)
+        ]
+        if not model_routes:
+            raise UpstreamFailure(
+                f"no compatible endpoint supports model '{model}' for API family '{family}'",
+                category=UpstreamFailureCategory.ROUTE_NOT_FOUND,
+                status_code=400,
+                endpoint=None,
+                retryable=False,
+            )
+
+    # If we got here, all candidates exist but their circuit breakers are open
+    unreachable_names = ", ".join(sorted(r.name for r in model_routes))
+    model_str = model or "any"
     raise UpstreamFailure(
-        "no upstream endpoint is available; all configured circuit breakers are open",
+        f"all compatible endpoints for family '{family}' and model '{model_str}' "
+        f"({unreachable_names}) are currently unreachable or have open circuit breakers",
         category=UpstreamFailureCategory.UNREACHABLE,
         status_code=503,
         endpoint=None,
         retryable=True,
-        remediation="inspect GET /endpoints for circuit breaker status and endpoint health",
+        remediation="inspect GET /endpoints for circuit breaker status and start the local engines",
     )
 
 
