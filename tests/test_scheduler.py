@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from time import monotonic
 
 import pytest
 
 from computecop.config import PolicyConfig, QueueConfig
+from computecop.config import PolicyConfig as SchedulerPolicyConfig
 from computecop.models import (
     PolicyRuleEvent,
     PolicyRuleStatus,
@@ -15,7 +17,7 @@ from computecop.models import (
     RequestPriority,
     SystemState,
 )
-from computecop.policy import PressureReport
+from computecop.policy import ConcurrencyLimits, PressureReport, compute_concurrency_limits
 from computecop.request_queue import AsyncRequestQueue
 from computecop.scheduler import (
     AdaptiveScheduler,
@@ -62,7 +64,7 @@ def _pressure_report(
         system_state=system_state,
         summary="test pressure",
     )
-    return PressureReport(
+    report = PressureReport(
         system_state=system_state,
         global_juice_level=70,
         yield_active=yield_active,
@@ -73,7 +75,19 @@ def _pressure_report(
         memory_budget_scale=1.0,
         total_ram_gb=16.0,
         trace=trace,
+        concurrency_limits=ConcurrencyLimits(
+            max_foreground=4,
+            max_background=4,
+            max_endpoint_foreground=2,
+            max_endpoint_background=1,
+            reasons=("test",),
+        ),
     )
+    limits = compute_concurrency_limits(
+        report,
+        SchedulerPolicyConfig(max_background_concurrency=4),
+    )
+    return replace(report, concurrency_limits=limits)
 
 
 def test_estimate_work_cost_prefers_foreground() -> None:
