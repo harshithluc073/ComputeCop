@@ -258,6 +258,17 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
         items = await runtime.queue.inspect()
         return {"queue": items}
 
+    @app.post("/queue/pause")
+    async def pause_queue() -> dict[str, object]:
+        await runtime.queue.pause()
+        return {"ok": True, "state": runtime.queue.lifecycle_state.value}
+
+    @app.post("/queue/resume")
+    async def resume_queue() -> dict[str, object]:
+        await runtime.queue.resume()
+        return {"ok": True, "state": runtime.queue.lifecycle_state.value}
+
+
 
     @app.get("/decisions/{correlation_id}")
     async def decision(correlation_id: str) -> Response:

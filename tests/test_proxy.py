@@ -245,6 +245,29 @@ async def test_proxy_emits_guidance_headers(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_queue_api_endpoints(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Check initial inspect state
+        inspect_resp = await client.get("/queue/inspect")
+        assert inspect_resp.status_code == 200
+        assert "queue" in inspect_resp.json()
+        assert inspect_resp.json()["queue"] == []
+
+        # Pause queue
+        pause_resp = await client.post("/queue/pause")
+        assert pause_resp.status_code == 200
+        assert pause_resp.json() == {"ok": True, "state": "paused"}
+
+        # Resume queue
+        resume_resp = await client.post("/queue/resume")
+        assert resume_resp.status_code == 200
+        assert resume_resp.json() == {"ok": True, "state": "accepting"}
+
+
 def _app(tmp_path: Path):
     config = RuntimeConfig(
         event_log_path=tmp_path / "events.jsonl",
