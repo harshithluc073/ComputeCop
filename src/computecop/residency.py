@@ -214,6 +214,24 @@ class ModelResidencyTracker:
                 except Exception as exc:
                     self._logger.debug("Failed to query llama.cpp slots: %r", exc)
 
+            elif route.kind == EndpointKind.OPENAI_COMPATIBLE:
+                # Query /v1/models (available models)
+                try:
+                    models_resp = await client.get(
+                        f"{route.base_url}/v1/models",
+                        timeout=5.0,
+                    )
+                    if models_resp.status_code == 200:
+                        models_data = models_resp.json()
+                        models = models_data.get("data", [])
+                        for item in models:
+                            name = item.get("id")
+                            if name:
+                                key = (name, route.name)
+                                self._endpoint_observations[key] = ("openai_models", None, 0.2, now)
+                except Exception as exc:
+                    self._logger.debug("Failed to query OpenAI compatible models: %r", exc)
+
     def get_estimates(self) -> list[ModelResidency]:
         """Aggregate observations and access history to estimate residency."""
 
@@ -289,3 +307,52 @@ class ModelResidencyTracker:
             )
 
         return list(estimates.values())
+
+    def is_model_compatible(self, model: str, endpoint: str) -> bool:
+        """Return whether the endpoint is compatible with the requested model."""
+        observed_models = {m for m, ep in self._endpoint_observations if ep == endpoint}
+        accessed_models = {m for m, ep in self._last_accessed if ep == endpoint}
+        all_models = observed_models | accessed_models
+
+        if not all_models:
+            return True  # No observations, treat as compatible fallback
+
+        for obs in all_models:
+            if model_matches(model, obs):
+                return True
+        return False
+
+
+def model_matches(requested: str, observed: str) -> bool:
+    """Check if requested model matches observed model, ignoring tags, paths, and extensions."""
+    req = requested.strip().lower()
+    obs = observed.strip().lower()
+    if req == obs:
+        return True
+
+    # Strip tags (e.g., llama3:8b -> llama3)
+    req_base = req.split(":")[0]
+    obs_base = obs.split(":")[0]
+    if req_base == obs_base:
+        return True
+
+    # Strip paths and extensions (e.g., /models/llama-3.gguf -> llama-3)
+    import os
+    req_name, _ = os.path.splitext(os.path.basename(req_base))
+    obs_name, _ = os.path.splitext(os.path.basename(obs_base))
+    if req_name == obs_name:
+        return True
+
+    # Helper to normalize delimiters like - and _
+    def normalize(s: str) -> str:
+        return s.replace("-", "").replace("_", "").replace(".", "")
+
+    req_norm = normalize(req_name)
+    obs_norm = normalize(obs_name)
+    if req_norm == obs_norm:
+        return True
+    if req_norm in obs_norm or obs_norm in req_norm:
+        return True
+
+    return False
+
