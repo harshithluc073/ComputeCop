@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any
 
+import httpx
 import typer
 import uvicorn
 from rich.console import Console
@@ -37,6 +38,8 @@ config_app = typer.Typer(help="Inspect effective ComputeCop configuration.")
 app.add_typer(config_app, name="config")
 events_app = typer.Typer(help="Inspect persisted ComputeCop runtime events.")
 app.add_typer(events_app, name="events")
+queue_app = typer.Typer(help="Control and inspect the background request queue.")
+app.add_typer(queue_app, name="queue")
 
 
 class CliContext:
@@ -415,3 +418,46 @@ def _format_explain_value(value: Any) -> str:
     if isinstance(value, (dict, list)):
         return json.dumps(value, separators=(",", ":"))
     return str(value)
+
+
+@queue_app.command("pause")
+def queue_pause(ctx: typer.Context) -> None:
+    """Pause the background request queue."""
+
+    _send_queue_command(ctx, "pause")
+
+
+@queue_app.command("resume")
+def queue_resume(ctx: typer.Context) -> None:
+    """Resume the background request queue."""
+
+    _send_queue_command(ctx, "resume")
+
+
+def _send_queue_command(ctx: typer.Context, command: str) -> None:
+    config = _load_or_exit(ctx)
+    host = config.server.host
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+    url = f"http://{host}:{config.server.port}/queue/{command}"
+
+    console = Console()
+    try:
+        response = httpx.post(url, timeout=5.0)
+        if response.status_code == 200:
+            res_data = response.json()
+            if res_data.get("ok"):
+                action = "paused" if command == "pause" else "resumed"
+                console.print(f"[green]Successfully {action} the queue. Current state: {res_data.get('state')}[/green]")
+            else:
+                console.print(f"[red]Failed to {command} the queue.[/red]")
+                raise typer.Exit(code=1)
+        else:
+            console.print(f"[red]Error from server (HTTP {response.status_code}): {response.text}[/red]")
+            raise typer.Exit(code=1)
+    except Exception as exc:
+        console.print(f"[red]Could not connect to ComputeCop daemon at {url}: {exc}[/red]")
+        raise typer.Exit(code=1)
+

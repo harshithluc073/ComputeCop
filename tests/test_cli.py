@@ -254,3 +254,35 @@ def _fake_runtime():
             return None
 
     return SimpleNamespace(upstream=FakeUpstream())
+
+
+def test_cli_queue_commands(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("computecop.cli.load_config", lambda **_: _config(tmp_path))
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True, "state": "paused"}
+
+    class FakeResponseResume:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True, "state": "accepting"}
+
+    def fake_post(url, **kwargs):
+        if "pause" in url:
+            return FakeResponse()
+        return FakeResponseResume()
+
+    monkeypatch.setattr("httpx.post", fake_post)
+
+    result_pause = CliRunner().invoke(app, ["queue", "pause"])
+    assert result_pause.exit_code == 0
+    assert "Successfully paused" in result_pause.output
+
+    result_resume = CliRunner().invoke(app, ["queue", "resume"])
+    assert result_resume.exit_code == 0
+    assert "Successfully resumed" in result_resume.output
+
