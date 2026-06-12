@@ -442,8 +442,9 @@ async def _forward_upstream(
     def make_release_capacity(route_name: str, fg: bool) -> Callable[[], Awaitable[None]]:
         async def release_capacity() -> None:
             await runtime.concurrency_governor.release(route_name, foreground=fg)
+
         return release_capacity
-    
+
     can_retry = not requires_streaming and not metadata.endpoint_name
     failed_endpoints: set[str] = set()
 
@@ -519,9 +520,7 @@ async def _forward_upstream(
 
             # Record the failure for the circuit breaker of the specific endpoint
             failed_endpoint_name = (
-                route.name
-                if route is not None
-                else (exc.endpoint or metadata.endpoint_name)
+                route.name if route is not None else (exc.endpoint or metadata.endpoint_name)
             )
             if failed_endpoint_name:
                 runtime.endpoint_registry.record_upstream_failure(failed_endpoint_name)
@@ -849,8 +848,7 @@ def _select_route(
         known_families = {r.kind.value for r in all_routes}
         kinds_str = ", ".join(sorted(known_families))
         raise UpstreamFailure(
-            f"no configured endpoint supports API family '{family}', "
-            f"configured kinds: {kinds_str}",
+            f"no configured endpoint supports API family '{family}', configured kinds: {kinds_str}",
             category=UpstreamFailureCategory.ROUTE_NOT_FOUND,
             status_code=400,
             endpoint=None,
@@ -871,7 +869,8 @@ def _select_route(
     model_routes = stream_routes
     if model:
         model_routes = [
-            r for r in stream_routes
+            r
+            for r in stream_routes
             if runtime.state.residency_tracker.is_model_compatible(model, r.name)
         ]
         if not model_routes:

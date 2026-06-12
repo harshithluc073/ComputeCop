@@ -233,20 +233,20 @@ def _app(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_select_compatible_with_model_compatibility() -> None:
     from computecop.residency import ModelResidencyTracker
-    
+
     router = UpstreamRouter([_ollama_route(), _llama_route()])
     tracker = ModelResidencyTracker()
     registry = EndpointCapabilityRegistry(router, residency_tracker=tracker)
-    
+
     # 1. No observations yet -> should treat both as compatible
     assert registry.select_compatible(family="ollama", model="llama3") is not None
-    
+
     # 2. Add observation to ollama
     tracker.record_request("llama3:latest", "ollama", RequestClass.USER_PROMPT)
     selected = registry.select_compatible(family="llama_cpp", model="phi3")
     assert selected is not None
     assert selected.name == "llama-cpp"
-    
+
     selected = registry.select_compatible(family="ollama", model="llama3")
     assert selected is not None
     assert selected.name == "ollama"
@@ -257,6 +257,7 @@ async def test_select_compatible_with_model_compatibility() -> None:
 @pytest.mark.asyncio
 async def test_model_matches_helper() -> None:
     from computecop.residency import model_matches
+
     assert model_matches("llama3", "llama3:latest") is True
     assert model_matches("llama-3-8b", "models/llama3-8b.gguf") is True
     assert model_matches("phi_3", "phi-3") is True
@@ -277,19 +278,20 @@ async def test_precise_error_responses_when_no_compatible_endpoint(tmp_path: Pat
         ],
     )
     app = create_app(config)
-    
+
     # Open the circuit breaker for ollama so fallback is not allowed
     registry = app.state.runtime.endpoint_registry
     registry.record_upstream_failure("ollama")
     registry.record_upstream_failure("ollama")
     registry.record_upstream_failure("ollama")
-    
+
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post("/v1/chat/completions", json={"model": "llama3"})
         assert response.status_code == 400
-        assert "no configured endpoint supports API family 'openai'" in response.json()["error"]["message"]
+        msg = response.json()["error"]["message"]
+        assert "no configured endpoint supports API family 'openai'" in msg
 
         config_no_stream = RuntimeConfig(
             event_log_path=tmp_path / "events_no_stream.jsonl",
@@ -308,13 +310,16 @@ async def test_precise_error_responses_when_no_compatible_endpoint(tmp_path: Pat
         registry_ns.record_upstream_failure("ollama")
         registry_ns.record_upstream_failure("ollama")
         registry_ns.record_upstream_failure("ollama")
-        
+
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app_no_stream), base_url="http://test"
         ) as client_ns:
-            response = await client_ns.post("/api/generate", json={"model": "llama3", "stream": True})
+            response = await client_ns.post(
+                "/api/generate", json={"model": "llama3", "stream": True}
+            )
             assert response.status_code == 400
-            assert "supports streaming requests" in response.json()["error"]["message"]
+            msg_ns = response.json()["error"]["message"]
+            assert "supports streaming requests" in msg_ns
 
 
 @pytest.mark.asyncio
@@ -333,31 +338,31 @@ async def test_safe_endpoint_failover(tmp_path: Path) -> None:
                 kind=EndpointKind.OLLAMA,
                 base_url="http://ollama-2.test",
                 health_path="/api/tags",
-            )
+            ),
         ],
     )
     app = create_app(config)
     router = app.state.runtime.upstream
-    
+
     await router._client.aclose()
-    
+
     calls = []
+
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(str(request.url))
         if "ollama-1.test" in str(request.url):
             raise httpx.ConnectError("Connection refused", request=request)
         return httpx.Response(200, json={"done": True})
-        
+
     router._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    
+
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         response = await client.post("/api/generate", json={"model": "llama3", "prompt": "test"})
         assert response.status_code == 200
         assert response.json()["done"] is True
-        
+
     assert len(calls) == 2
     assert "ollama-1.test" in calls[0]
     assert "ollama-2.test" in calls[1]
-

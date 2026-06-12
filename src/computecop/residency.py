@@ -338,6 +338,7 @@ def model_matches(requested: str, observed: str) -> bool:
 
     # Strip paths and extensions (e.g., /models/llama-3.gguf -> llama-3)
     import os
+
     req_name, _ = os.path.splitext(os.path.basename(req_base))
     obs_name, _ = os.path.splitext(os.path.basename(obs_base))
     if req_name == obs_name:
@@ -355,4 +356,3 @@ def model_matches(requested: str, observed: str) -> bool:
         return True
 
     return False
-
