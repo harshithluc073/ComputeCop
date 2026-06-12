@@ -528,15 +528,28 @@ async def _forward_upstream(
 
             # Check if we can retry on another endpoint
             if can_retry and exc.retryable and route is not None:
-                failed_endpoints.add(route.name)
-                await runtime.event_store.append(
-                    "upstream.failover",
-                    correlation_id=metadata.correlation_id,
-                    failed_endpoint=route.name,
-                    category=exc.category.value,
-                    status_code=exc.status_code,
+                next_route = runtime.endpoint_registry.select_compatible(
+                    family=family,
+                    model=metadata.model,
+                    requires_streaming=requires_streaming,
+                    exclude=failed_endpoints | {route.name},
                 )
-                continue
+                if next_route is None:
+                    fallback = runtime.upstream.route(None)
+                    allowed = runtime.endpoint_registry.allows_traffic(fallback.name)
+                    if (fallback.name not in (failed_endpoints | {route.name})) and allowed:
+                        next_route = fallback
+
+                if next_route is not None:
+                    failed_endpoints.add(route.name)
+                    await runtime.event_store.append(
+                        "upstream.failover",
+                        correlation_id=metadata.correlation_id,
+                        failed_endpoint=route.name,
+                        category=exc.category.value,
+                        status_code=exc.status_code,
+                    )
+                    continue
 
             # Otherwise, log error event and return error response
             await runtime.event_store.append(
@@ -801,6 +814,12 @@ def _select_route(
     )
     if selected is not None:
         return selected
+
+    # Fallback to default route if allowed traffic and not excluded
+    fallback = runtime.upstream.route(None)
+    allowed = runtime.endpoint_registry.allows_traffic(fallback.name)
+    if (not exclude or fallback.name not in exclude) and allowed:
+        return fallback
 
     # Diagnostics to return precise errors
     target_kind = resolve_api_family(family)
