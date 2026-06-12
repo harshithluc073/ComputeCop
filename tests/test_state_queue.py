@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from time import monotonic
 
 import pytest
@@ -286,3 +287,38 @@ async def test_queue_worker_states_are_tracked() -> None:
 
 async def _answer(value: str) -> str:
     return value
+
+
+@pytest.mark.asyncio
+async def test_queue_inspect() -> None:
+    queue = AsyncRequestQueue(QueueConfig(max_size=4))
+    metadata = _background_metadata()
+    metadata = RequestMetadata(
+        method=metadata.method,
+        path=metadata.path,
+        headers=metadata.headers,
+        request_class=metadata.request_class,
+        priority=metadata.priority,
+        correlation_id="test-corr-id",
+        client_host=metadata.client_host,
+        model="test-model",
+        endpoint_name="test-endpoint",
+        received_at=metadata.received_at,
+    )
+
+    task = asyncio.create_task(queue.submit(metadata, lambda: _answer("done")))
+    await asyncio.sleep(0.01)
+
+    items = await queue.inspect()
+    assert len(items) == 1
+    assert items[0]["correlation_id"] == "test-corr-id"
+    assert items[0]["class"] == RequestClass.BACKGROUND_REQUEST.value
+    assert items[0]["priority"] == RequestPriority.BACKGROUND.value
+    assert items[0]["endpoint"] == "test-endpoint"
+    assert items[0]["estimated_tokens"] == 0
+    assert items[0]["age"] >= 0
+
+    await queue.close()
+    with contextlib.suppress(BaseException):
+        await task
+

@@ -302,6 +302,33 @@ class AsyncRequestQueue:
 
         return self.snapshot()
 
+    async def inspect(self) -> list[dict[str, Any]]:
+        """Return safe metadata for all currently queued requests."""
+
+        async with self._condition:
+            now = monotonic()
+            items = []
+            for item in self._heap:
+                req = item.request
+                if req.cancelled or req.cancellation.is_set():
+                    continue
+                metadata = req.metadata
+                estimated_tokens = (
+                    metadata.token_estimation.estimated_tokens
+                    if metadata.token_estimation is not None
+                    else 0
+                )
+                items.append({
+                    "correlation_id": metadata.correlation_id,
+                    "class": metadata.request_class.value,
+                    "priority": metadata.priority.value,
+                    "endpoint": metadata.endpoint_name,
+                    "estimated_tokens": estimated_tokens,
+                    "age": now - req.enqueued_at,
+                })
+            return items
+
+
     def _rejection_for_submit_locked(self, metadata: RequestMetadata) -> QueueFullError | None:
         if self._lifecycle_state == QueueLifecycleState.CLOSED:
             self._rejected += 1

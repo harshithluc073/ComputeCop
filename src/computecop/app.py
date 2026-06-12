@@ -253,6 +253,12 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
         records = await runtime.endpoint_registry.list_records(force_probe=refresh)
         return {"endpoints": [record.to_dict() for record in records]}
 
+    @app.get("/queue/inspect")
+    async def inspect_queue() -> dict[str, object]:
+        items = await runtime.queue.inspect()
+        return {"queue": items}
+
+
     @app.get("/decisions/{correlation_id}")
     async def decision(correlation_id: str) -> Response:
         found = await runtime.state.decision_for_correlation_id(correlation_id)
