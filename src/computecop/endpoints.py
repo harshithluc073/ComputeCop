@@ -5,7 +5,10 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from computecop.residency import ModelResidencyTracker
 
 from computecop.health import CircuitBreakerRegistry, CircuitBreakerState, CircuitBreakerStatus
 from computecop.models import EndpointKind, EndpointRoute, utc_now
@@ -150,6 +153,7 @@ class EndpointCapabilityRegistry:
         failure_threshold: int = 3,
         cooldown_seconds: float = 30.0,
         half_open_successes: int = 1,
+        residency_tracker: ModelResidencyTracker | None = None,
     ) -> None:
         if probe_ttl_seconds <= 0:
             raise ValueError("probe_ttl_seconds must be positive")
@@ -162,6 +166,7 @@ class EndpointCapabilityRegistry:
             cooldown_seconds=cooldown_seconds,
             half_open_successes=half_open_successes,
         )
+        self._residency_tracker = residency_tracker
 
     @property
     def probe_ttl_seconds(self) -> float:
@@ -287,10 +292,12 @@ class EndpointCapabilityRegistry:
         self,
         *,
         family: str | EndpointKind | None = None,
+        model: str | None = None,
         requires_streaming: bool = False,
         prefer_healthy: bool = True,
+        exclude: set[str] | None = None,
     ) -> EndpointRoute | None:
-        """Choose the best configured endpoint for an API family."""
+        """Choose the best configured endpoint for an API family and model."""
 
         target_kind = _resolve_family(family)
         if target_kind is None:
@@ -301,6 +308,17 @@ class EndpointCapabilityRegistry:
             for route in self._router.routes.values()
             if route.kind == target_kind and _route_supports_streaming(route, requires_streaming)
         ]
+
+        if exclude:
+            candidates = [r for r in candidates if r.name not in exclude]
+
+        if model and self._residency_tracker is not None:
+            candidates = [
+                route
+                for route in candidates
+                if self._residency_tracker.is_model_compatible(model, route.name)
+            ]
+
         if not candidates:
             return None
 
