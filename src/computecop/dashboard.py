@@ -125,6 +125,21 @@ class Dashboard:
             f"{scheduler.running_foreground}/{scheduler.running_background}",
         )
         table.add_row("Scheduler spare slots", str(scheduler.spare_slots))
+        concurrency = snapshot.concurrency
+        if concurrency is not None:
+            table.add_row(
+                "Endpoint fg/bg limits",
+                (
+                    f"{concurrency.limits.max_endpoint_foreground}/"
+                    f"{concurrency.limits.max_endpoint_background}"
+                ),
+            )
+            if concurrency.endpoints:
+                endpoint = concurrency.endpoints[0]
+                table.add_row(
+                    f"Endpoint {endpoint.endpoint_name} running",
+                    f"{endpoint.running_foreground}/{endpoint.running_background}",
+                )
         return Panel(table, title="Policy", border_style="magenta")
 
     def _worker_panel(self, snapshot: RuntimeSnapshot) -> Panel:

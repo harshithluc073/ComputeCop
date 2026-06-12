@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from time import monotonic
@@ -15,6 +15,7 @@ from fastapi.responses import Response, StreamingResponse
 from computecop import __version__
 from computecop.admission import AdmissionController
 from computecop.classifier import RequestClassifier
+from computecop.concurrency import EndpointConcurrencyGovernor, is_foreground_metadata
 from computecop.config import RuntimeConfig, cached_config
 from computecop.endpoints import EndpointCapabilityRegistry, resolve_api_family
 from computecop.events import JsonlEventStore
@@ -46,6 +47,7 @@ class ComputeCopRuntime:
     admission: AdmissionController
     queue: AsyncRequestQueue
     scheduler: AdaptiveScheduler
+    concurrency_governor: EndpointConcurrencyGovernor
     upstream: UpstreamRouter
     endpoint_registry: EndpointCapabilityRegistry
     health_watcher: EndpointHealthWatcher
@@ -134,6 +136,10 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         queue_config=config.queue,
     )
     scheduler.set_change_callback(state.update_scheduler)
+    concurrency_governor = EndpointConcurrencyGovernor(
+        [endpoint.name for endpoint in config.endpoints]
+    )
+    concurrency_governor.set_change_callback(state.update_concurrency)
     yield_controller = RamYieldController(config.policy)
     offload_manager = OffloadManager(routes)
     event_store = JsonlEventStore(config.event_log_path)
@@ -157,7 +163,11 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         await state.update_telemetry(sample)
         state.residency_tracker.update_from_telemetry(sample)
         await yield_controller.update(sample)
-        pressure = policy.evaluate(sample)
+        pressure = policy.evaluate(
+            sample,
+            open_circuit_breaker_count=endpoint_registry.open_circuit_breaker_count(),
+        )
+        await concurrency_governor.update_limits(pressure.concurrency_limits)
         await state.set_policy_state(
             system_state=pressure.system_state,
             global_juice_level=pressure.global_juice_level,
@@ -168,6 +178,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
             await event_store.append("policy.yield", reason=pressure.yield_reason)
         await scheduler.update_pressure(pressure)
         await state.update_scheduler(scheduler.snapshot())
+        await state.update_concurrency(concurrency_governor.snapshot())
 
     telemetry_loop.subscribe(update_runtime)
 
@@ -179,6 +190,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
         admission=AdmissionController(policy, config.queue),
         queue=queue,
         scheduler=scheduler,
+        concurrency_governor=concurrency_governor,
         upstream=upstream,
         endpoint_registry=endpoint_registry,
         health_watcher=health_watcher,
@@ -332,7 +344,10 @@ async def _handle_inference_request(
         client_host=request.client.host if request.client else None,
     )
     snapshot = await runtime.state.snapshot()
-    pressure = runtime.policy.evaluate(snapshot.telemetry)
+    pressure = runtime.policy.evaluate(
+        snapshot.telemetry,
+        open_circuit_breaker_count=runtime.endpoint_registry.open_circuit_breaker_count(),
+    )
     decision = runtime.admission.decide(
         metadata,
         pressure,
@@ -420,6 +435,9 @@ async def _forward_upstream(
     headers["x-computecop-correlation-id"] = metadata.correlation_id
     headers["x-computecop-juice-level"] = str(decision.budget.juice_level)
 
+    foreground = is_foreground_metadata(metadata)
+    route = None
+    capacity_acquired = False
     try:
         requires_streaming = isinstance(shaped_body, dict) and shaped_body.get("stream") is True
         route = _select_route(
@@ -434,6 +452,8 @@ async def _forward_upstream(
                 route.name,
                 metadata.request_class,
             )
+        await runtime.concurrency_governor.acquire(route.name, foreground=foreground)
+        capacity_acquired = True
         if requires_streaming and route.supports_streaming:
             return StreamingResponse(
                 _tracked_stream(
@@ -446,6 +466,10 @@ async def _forward_upstream(
                         headers=headers,
                         json_body=shaped_body,
                     ),
+                    endpoint_release=lambda: runtime.concurrency_governor.release(
+                        route.name,
+                        foreground=foreground,
+                    ),
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -453,15 +477,21 @@ async def _forward_upstream(
                     **shaping_headers,
                 },
             )
-        upstream = await runtime.upstream.request(
-            route,
-            method=request.method,
-            path=upstream_path,
-            headers=headers,
-            json_body=shaped_body,
-        )
-        runtime.endpoint_registry.record_upstream_success(route.name)
+        try:
+            upstream = await runtime.upstream.request(
+                route,
+                method=request.method,
+                path=upstream_path,
+                headers=headers,
+                json_body=shaped_body,
+            )
+            runtime.endpoint_registry.record_upstream_success(route.name)
+        finally:
+            await runtime.concurrency_governor.release(route.name, foreground=foreground)
+            capacity_acquired = False
     except UpstreamFailure as exc:
+        if capacity_acquired and route is not None:
+            await runtime.concurrency_governor.release(route.name, foreground=foreground)
         if exc.endpoint:
             runtime.endpoint_registry.record_upstream_failure(exc.endpoint)
         await runtime.event_store.append(
@@ -716,6 +746,7 @@ async def _tracked_stream(
     runtime: ComputeCopRuntime,
     route_name: str,
     stream: AsyncIterator[bytes],
+    endpoint_release: Callable[[], Awaitable[None]] | None = None,
 ) -> AsyncIterator[bytes]:
     try:
         async for chunk in stream:
@@ -724,6 +755,9 @@ async def _tracked_stream(
     except UpstreamFailure:
         runtime.endpoint_registry.record_upstream_failure(route_name)
         raise
+    finally:
+        if endpoint_release is not None:
+            await endpoint_release()
 
 
 def json_dumps(value: object) -> str:
