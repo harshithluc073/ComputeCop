@@ -123,7 +123,8 @@ scheduler that sits above the async request queue:
 
 | Field | Meaning |
 | --- | --- |
-| `reserved_foreground_slots` | Foreground slots reserved by policy. |
+| `reserved_foreground_slots` | Effective foreground slot ceiling after pressure shaping. |
+| `effective_foreground_slots` | Same as `reserved_foreground_slots` for scheduler snapshots. |
 | `max_background_slots` | Configured background concurrency ceiling. |
 | `effective_background_slots` | Live background limit after pressure shaping. |
 | `running_foreground` | Foreground executions currently holding slots. |
@@ -133,6 +134,36 @@ scheduler that sits above the async request queue:
 
 The Rich dashboard Policy panel mirrors these scheduler counters for live
 operations.
+
+## Concurrency Governor
+
+Starting in v0.2.5, ComputeCop adds a second concurrency layer that limits
+simultaneous upstream requests per endpoint and request class:
+
+- **Per-endpoint semaphores**: `policy.max_endpoint_foreground_concurrency` and
+  `policy.max_endpoint_background_concurrency` cap how many concurrent requests
+  each configured endpoint may serve.
+- **Acquire before forward**: the proxy acquires endpoint capacity after route
+  selection and before upstream forwarding. Streaming responses release capacity
+  when the stream completes, errors, or the client disconnects.
+- **Dynamic concurrency limits**: policy computes recommended global and
+  per-endpoint ceilings from RAM, swap, thermal, and open circuit-breaker
+  pressure. The scheduler and endpoint governor both honor these live limits.
+
+`GET /state` exposes a `concurrency` object when the governor is active:
+
+| Field | Meaning |
+| --- | --- |
+| `limits.max_foreground` | Effective global foreground slot ceiling. |
+| `limits.max_background` | Effective global background slot ceiling. |
+| `limits.max_endpoint_foreground` | Per-endpoint foreground ceiling. |
+| `limits.max_endpoint_background` | Per-endpoint background ceiling. |
+| `limits.reasons` | Why limits were shaped. |
+| `endpoints[].running_foreground` | Foreground requests currently using an endpoint. |
+| `endpoints[].running_background` | Background requests currently using an endpoint. |
+
+The scheduler `effective_foreground_slots` field now reflects live policy
+shaping instead of only the configured maximum.
 
 ## Graceful Shutdown
 
