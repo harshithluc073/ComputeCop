@@ -218,7 +218,6 @@ class AsyncRequestQueue:
         await self._notify_change()
         return request
 
-
     async def run_worker(
         self,
         worker_id: str,
@@ -320,16 +319,17 @@ class AsyncRequestQueue:
                     if metadata.token_estimation is not None
                     else 0
                 )
-                items.append({
-                    "correlation_id": metadata.correlation_id,
-                    "class": metadata.request_class.value,
-                    "priority": metadata.priority.value,
-                    "endpoint": metadata.endpoint_name,
-                    "estimated_tokens": estimated_tokens,
-                    "age": now - req.enqueued_at,
-                })
+                items.append(
+                    {
+                        "correlation_id": metadata.correlation_id,
+                        "class": metadata.request_class.value,
+                        "priority": metadata.priority.value,
+                        "endpoint": metadata.endpoint_name,
+                        "estimated_tokens": estimated_tokens,
+                        "age": now - req.enqueued_at,
+                    }
+                )
             return items
-
 
     def _rejection_for_submit_locked(self, metadata: RequestMetadata) -> QueueFullError | None:
         if self._lifecycle_state == QueueLifecycleState.CLOSED:

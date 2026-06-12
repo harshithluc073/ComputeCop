@@ -450,14 +450,18 @@ def _send_queue_command(ctx: typer.Context, command: str) -> None:
             res_data = response.json()
             if res_data.get("ok"):
                 action = "paused" if command == "pause" else "resumed"
-                console.print(f"[green]Successfully {action} the queue. Current state: {res_data.get('state')}[/green]")
+                state = res_data.get("state")
+                console.print(
+                    f"[green]Successfully {action} the queue. Current state: {state}[/green]"
+                )
             else:
                 console.print(f"[red]Failed to {command} the queue.[/red]")
-                raise typer.Exit(code=1)
+                raise typer.Exit(code=1) from None
         else:
-            console.print(f"[red]Error from server (HTTP {response.status_code}): {response.text}[/red]")
-            raise typer.Exit(code=1)
+            console.print(
+                f"[red]Error from server (HTTP {response.status_code}): {response.text}[/red]"
+            )
+            raise typer.Exit(code=1) from None
     except Exception as exc:
         console.print(f"[red]Could not connect to ComputeCop daemon at {url}: {exc}[/red]")
-        raise typer.Exit(code=1)
-
+        raise typer.Exit(code=1) from None

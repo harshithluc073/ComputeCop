@@ -285,4 +285,3 @@ def test_cli_queue_commands(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     result_resume = CliRunner().invoke(app, ["queue", "resume"])
     assert result_resume.exit_code == 0
     assert "Successfully resumed" in result_resume.output
-

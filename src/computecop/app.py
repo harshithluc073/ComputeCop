@@ -268,8 +268,6 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
         await runtime.queue.resume()
         return {"ok": True, "state": runtime.queue.lifecycle_state.value}
 
-
-
     @app.get("/decisions/{correlation_id}")
     async def decision(correlation_id: str) -> Response:
         found = await runtime.state.decision_for_correlation_id(correlation_id)

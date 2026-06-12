@@ -364,5 +364,3 @@ async def test_queue_pause_blocks_worker_execution() -> None:
     worker.cancel()
     with contextlib.suppress(BaseException):
         await worker
-
-
