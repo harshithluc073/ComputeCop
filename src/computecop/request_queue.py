@@ -112,6 +112,7 @@ class AsyncRequestQueue:
             if self._lifecycle_state == QueueLifecycleState.CLOSED:
                 return
             self._lifecycle_state = QueueLifecycleState.PAUSED
+            self._condition.notify_all()
         await self._notify_change()
 
     async def resume(self) -> None:
@@ -203,7 +204,7 @@ class AsyncRequestQueue:
                     raise QueueFullError("request queue is closed")
                 self._discard_expired_locked()
                 self._rebalance_aging_locked()
-                if self._heap:
+                if self._heap and self._lifecycle_state != QueueLifecycleState.PAUSED:
                     item = heapq.heappop(self._heap)
                     if item.request.cancelled or item.request.cancellation.is_set():
                         continue
@@ -216,6 +217,7 @@ class AsyncRequestQueue:
                 await self._condition.wait()
         await self._notify_change()
         return request
+
 
     async def run_worker(
         self,

@@ -322,3 +322,47 @@ async def test_queue_inspect() -> None:
     with contextlib.suppress(BaseException):
         await task
 
+
+@pytest.mark.asyncio
+async def test_queue_pause_blocks_worker_execution() -> None:
+    queue = AsyncRequestQueue(QueueConfig(max_size=4))
+
+    release_1 = asyncio.Event()
+    release_2 = asyncio.Event()
+
+    async def runner_1() -> str:
+        await release_1.wait()
+        return "first"
+
+    async def runner_2() -> str:
+        await release_2.wait()
+        return "second"
+
+    worker = asyncio.create_task(queue.run_worker("worker-0"))
+    await queue.register_worker("worker-0")
+
+    task_1 = asyncio.create_task(queue.submit(_background_metadata(), runner_1))
+    await asyncio.sleep(0.01)
+
+    task_2 = asyncio.create_task(queue.submit(_background_metadata(), runner_2))
+    await asyncio.sleep(0.01)
+
+    await queue.pause()
+
+    release_1.set()
+    assert await task_1 == "first"
+    await asyncio.sleep(0.01)
+
+    assert not task_2.done()
+
+    await queue.resume()
+
+    release_2.set()
+    assert await task_2 == "second"
+
+    await queue.close()
+    worker.cancel()
+    with contextlib.suppress(BaseException):
+        await worker
+
+
