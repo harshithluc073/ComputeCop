@@ -1,6 +1,6 @@
 # ComputeCop
 
-[![Version](https://img.shields.io/badge/version-0.2.2-blue.svg)](https://github.com/harshithluc073/ComputeCop)
+[![Version](https://img.shields.io/badge/version-0.2.8-blue.svg)](https://github.com/harshithluc073/ComputeCop)
 [![Python](https://img.shields.io/badge/python-3.11%2B-green.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-informational.svg)](#platform-support)
@@ -221,6 +221,44 @@ computecop events stats --json
 
 The event log location follows `COMPUTECOP_EVENT_LOG`, falling back to the
 per-user cache directory.
+
+## Queue Control and Metrics API
+
+ComputeCop provides endpoints for monitoring metrics and managing the background queue status.
+
+### Performance and Telemetry Metrics
+
+Retrieve lightweight runtime performance metrics, including request latency histograms, queue wait times, upstream duration, and budget shaping ratios:
+
+```bash
+curl http://127.0.0.1:8765/metrics
+```
+
+The response returns:
+- `request_latency_histogram`: Request duration buckets and counts.
+- `queue_wait_time_histogram`: Seconds spent waiting in the priority queue before execution.
+- `upstream_duration_histogram`: Total upstream request round-trip durations.
+- `shaping`: Total vs. budget-shaped request counts and the calculated shaping ratio.
+
+### Queue Control and Inspection
+
+Inspect the active contents of the scheduler priority queue:
+
+```bash
+curl http://127.0.0.1:8765/queue/inspect
+```
+
+Pause and resume background worker execution:
+
+```bash
+# Pause queue processing
+curl -X POST http://127.0.0.1:8765/queue/pause
+
+# Resume queue processing
+curl -X POST http://127.0.0.1:8765/queue/resume
+```
+
+Interactive prompts continue execution normally without being affected by the paused queue.
 
 ## Diagnostics
 
