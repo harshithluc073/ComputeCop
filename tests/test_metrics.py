@@ -110,3 +110,37 @@ async def test_metrics_api_endpoint(tmp_path: Path) -> None:
         assert shaping["total_requests"] == 2
         assert shaping["shaped_requests"] == 1
         assert shaping["shaping_ratio"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_streaming_does_not_buffer(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    fake = FakeUpstream()
+    app.state.runtime.upstream = fake
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Request with streaming enabled
+        async with client.stream(
+            "POST",
+            "/v1/chat/completions",
+            json={
+                "model": "local",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+            },
+        ) as response:
+            assert response.status_code == 200
+            chunks = [chunk async for chunk in response.aiter_bytes()]
+            assert len(chunks) > 0
+            assert b"data: ok" in chunks[0]
+
+        # Retrieve /metrics to verify upstream duration and shaping were recorded
+        metrics_resp = await client.get("/metrics")
+        assert metrics_resp.status_code == 200
+        metrics = metrics_resp.json()
+
+        # Upstream duration counts should have recorded 1 event
+        upstream_counts = metrics["upstream_duration_histogram"]["counts"]
+        assert sum(upstream_counts) == 1
