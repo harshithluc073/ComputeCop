@@ -86,6 +86,7 @@ class RuntimeSnapshot:
     event_persistence: EventPersistenceSnapshot = field(default_factory=EventPersistenceSnapshot)
     recent_decisions: tuple[AdmissionDecision, ...] = field(default_factory=tuple)
     model_residency: tuple[ModelResidency, ...] = field(default_factory=tuple)
+    metrics: dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return cast(dict[str, object], to_jsonable(self))
@@ -108,6 +109,12 @@ class RuntimeStateStore:
         self._recent_decisions: deque[AdmissionDecision] = deque(maxlen=recent_decision_limit)
         self._decision_by_correlation_id: dict[str, AdmissionDecision] = {}
         self.residency_tracker = ModelResidencyTracker()
+        self._latency_buckets = (0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0)
+        self._request_latency_counts = [0] * (len(self._latency_buckets) + 1)
+        self._queue_wait_counts = [0] * (len(self._latency_buckets) + 1)
+        self._upstream_duration_counts = [0] * (len(self._latency_buckets) + 1)
+        self._total_requests = 0
+        self._shaped_requests = 0
 
     async def update_telemetry(self, telemetry: TelemetrySample) -> None:
         async with self._lock:
@@ -169,8 +176,57 @@ class RuntimeStateStore:
         async with self._lock:
             return self._decision_by_correlation_id.get(correlation_id)
 
+    async def record_request_latency(self, latency: float) -> None:
+        async with self._lock:
+            self._record_value(self._latency_buckets, self._request_latency_counts, latency)
+
+    async def record_queue_wait_time(self, wait_time: float) -> None:
+        async with self._lock:
+            self._record_value(self._latency_buckets, self._queue_wait_counts, wait_time)
+
+    async def record_upstream_duration(self, duration: float) -> None:
+        async with self._lock:
+            self._record_value(self._latency_buckets, self._upstream_duration_counts, duration)
+
+    async def record_shaping(self, *, shaped: bool) -> None:
+        async with self._lock:
+            self._total_requests += 1
+            if shaped:
+                self._shaped_requests += 1
+
+    def _record_value(self, buckets: tuple[float, ...], counts: list[int], value: float) -> None:
+        for idx, bucket in enumerate(buckets):
+            if value <= bucket:
+                counts[idx] += 1
+                return
+        counts[-1] += 1
+
     async def snapshot(self) -> RuntimeSnapshot:
         async with self._lock:
+            shaping_ratio = (
+                self._shaped_requests / self._total_requests
+                if self._total_requests > 0
+                else 0.0
+            )
+            metrics_dict = {
+                "request_latency_histogram": {
+                    "buckets": list(self._latency_buckets),
+                    "counts": list(self._request_latency_counts),
+                },
+                "queue_wait_time_histogram": {
+                    "buckets": list(self._latency_buckets),
+                    "counts": list(self._queue_wait_counts),
+                },
+                "upstream_duration_histogram": {
+                    "buckets": list(self._latency_buckets),
+                    "counts": list(self._upstream_duration_counts),
+                },
+                "shaping": {
+                    "total_requests": self._total_requests,
+                    "shaped_requests": self._shaped_requests,
+                    "shaping_ratio": shaping_ratio,
+                },
+            }
             return RuntimeSnapshot(
                 telemetry=self._telemetry,
                 system_state=self._system_state,
@@ -183,4 +239,5 @@ class RuntimeStateStore:
                 event_persistence=self._event_persistence,
                 recent_decisions=tuple(self._recent_decisions),
                 model_residency=tuple(self.residency_tracker.get_estimates()),
+                metrics=metrics_dict,
             )

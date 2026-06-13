@@ -79,12 +79,20 @@ class AsyncRequestQueue:
         self._completed = 0
         self._rejected = 0
         self._change_callback: QueueChangeCallback | None = None
+        self._wait_time_callback: Callable[[float], Awaitable[None] | None] | None = None
         self._worker_states: dict[str, WorkerSnapshot] = {}
 
     def set_change_callback(self, callback: QueueChangeCallback) -> None:
         """Register a callback invoked when queue counters change."""
 
         self._change_callback = callback
+
+    def set_wait_time_callback(
+        self, callback: Callable[[float], Awaitable[None] | None]
+    ) -> None:
+        """Register a callback invoked when queue wait time is measured."""
+
+        self._wait_time_callback = callback
 
     async def register_worker(self, worker_id: str) -> None:
         """Register a queue worker before its task starts."""
@@ -235,6 +243,13 @@ class AsyncRequestQueue:
             except QueueFullError:
                 await self._set_worker_state(worker_id, WorkerState.STOPPED)
                 return
+
+            if self._wait_time_callback is not None:
+                with contextlib.suppress(Exception):
+                    res = self._wait_time_callback(monotonic() - request.enqueued_at)
+                    if asyncio.iscoroutine(res):
+                        await res
+
             if acquire is not None:
                 try:
                     await acquire(request.metadata)

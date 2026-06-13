@@ -131,6 +131,7 @@ def build_runtime(config: RuntimeConfig) -> ComputeCopRuntime:
     )
     queue = AsyncRequestQueue(config.queue)
     queue.set_change_callback(state.update_queue)
+    queue.set_wait_time_callback(state.record_queue_wait_time)
     scheduler = AdaptiveScheduler(
         queue,
         policy_config=config.policy,
@@ -244,6 +245,11 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
         snapshot = await runtime.state.snapshot()
         return {"telemetry": to_jsonable(snapshot.telemetry)}
 
+    @app.get("/metrics")
+    async def metrics() -> dict[str, object]:
+        snapshot = await runtime.state.snapshot()
+        return snapshot.metrics
+
     @app.get("/events")
     async def events(limit: int = 100) -> dict[str, object]:
         return {"events": list(await runtime.event_store.tail(limit=max(1, min(limit, 500))))}
@@ -351,85 +357,90 @@ async def _handle_inference_request(
     upstream_path: str,
     family: str,
 ) -> Response:
-    body = await _json_body(request)
-    metadata = runtime.classifier.classify(
-        method=request.method,
-        path=str(request.url.path),
-        headers=request.headers,
-        body=body if isinstance(body, dict) else None,
-        client_host=request.client.host if request.client else None,
-    )
-    snapshot = await runtime.state.snapshot()
-    pressure = runtime.policy.evaluate(
-        snapshot.telemetry,
-        open_circuit_breaker_count=runtime.endpoint_registry.open_circuit_breaker_count(),
-    )
-    decision = runtime.admission.decide(
-        metadata,
-        pressure,
-        queue_size=runtime.queue.snapshot().queued,
-    )
-    await runtime.state.record_decision(decision)
-    await runtime.event_store.append(
-        "admission.decision",
-        decision=decision,
-        trace_id=decision.trace.trace_id if decision.trace else None,
-        path=metadata.path,
-        model=metadata.model,
-        endpoint=metadata.endpoint_name,
-    )
-
-    if decision.decision in {DecisionType.REJECT, DecisionType.YIELD}:
-        return decision_response(decision, status_code=429 if decision.retry_after_seconds else 503)
-
-    async def forward() -> Response:
-        return await _forward_upstream(
-            runtime=runtime,
-            request=request,
-            metadata=metadata,
+    start_time = monotonic()
+    try:
+        body = await _json_body(request)
+        metadata = runtime.classifier.classify(
+            method=request.method,
+            path=str(request.url.path),
+            headers=request.headers,
+            body=body if isinstance(body, dict) else None,
+            client_host=request.client.host if request.client else None,
+        )
+        snapshot = await runtime.state.snapshot()
+        pressure = runtime.policy.evaluate(
+            snapshot.telemetry,
+            open_circuit_breaker_count=runtime.endpoint_registry.open_circuit_breaker_count(),
+        )
+        decision = runtime.admission.decide(
+            metadata,
+            pressure,
+            queue_size=runtime.queue.snapshot().queued,
+        )
+        await runtime.state.record_decision(decision)
+        await runtime.event_store.append(
+            "admission.decision",
             decision=decision,
-            upstream_path=upstream_path,
-            family=family,
-            body=body,
+            trace_id=decision.trace.trace_id if decision.trace else None,
+            path=metadata.path,
+            model=metadata.model,
+            endpoint=metadata.endpoint_name,
         )
 
-    if (
-        decision.decision == DecisionType.THROTTLE
-        and metadata.request_class == RequestClass.BACKGROUND_REQUEST
-    ):
-        if not runtime.queue.accepts_background_work():
-            queue_state = runtime.queue.lifecycle_state.value
-            return error_response(
-                status_code=503,
-                message=f"background queue is {queue_state} and not accepting work",
-                error_type="computecop_queue_unavailable",
-                correlation_id=metadata.correlation_id,
-                retry_after_seconds=runtime.config.queue.background_retry_after_seconds,
-            )
-        try:
-            return await runtime.scheduler.execute_queued(metadata, forward)
-        except QueueFullError as exc:
-            status_code = 429 if "full" in str(exc) else 503
-            error_type = (
-                "computecop_queue_full" if status_code == 429 else "computecop_queue_unavailable"
-            )
-            return error_response(
-                status_code=status_code,
-                message=str(exc),
-                error_type=error_type,
-                correlation_id=metadata.correlation_id,
-                retry_after_seconds=runtime.config.queue.background_retry_after_seconds,
-            )
-        except QueueTimeoutError:
-            return error_response(
-                status_code=504,
-                message="queued background request expired before execution",
-                error_type="computecop_queue_timeout",
-                correlation_id=metadata.correlation_id,
-                retry_after_seconds=runtime.config.queue.background_retry_after_seconds,
+        if decision.decision in {DecisionType.REJECT, DecisionType.YIELD}:
+            return decision_response(decision, status_code=429 if decision.retry_after_seconds else 503)
+
+        async def forward() -> Response:
+            return await _forward_upstream(
+                runtime=runtime,
+                request=request,
+                metadata=metadata,
+                decision=decision,
+                upstream_path=upstream_path,
+                family=family,
+                body=body,
             )
 
-    return await runtime.scheduler.execute_immediate(metadata, forward)
+        if (
+            decision.decision == DecisionType.THROTTLE
+            and metadata.request_class == RequestClass.BACKGROUND_REQUEST
+        ):
+            if not runtime.queue.accepts_background_work():
+                queue_state = runtime.queue.lifecycle_state.value
+                return error_response(
+                    status_code=503,
+                    message=f"background queue is {queue_state} and not accepting work",
+                    error_type="computecop_queue_unavailable",
+                    correlation_id=metadata.correlation_id,
+                    retry_after_seconds=runtime.config.queue.background_retry_after_seconds,
+                )
+            try:
+                return await runtime.scheduler.execute_queued(metadata, forward)
+            except QueueFullError as exc:
+                status_code = 429 if "full" in str(exc) else 503
+                error_type = (
+                    "computecop_queue_full" if status_code == 429 else "computecop_queue_unavailable"
+                )
+                return error_response(
+                    status_code=status_code,
+                    message=str(exc),
+                    error_type=error_type,
+                    correlation_id=metadata.correlation_id,
+                    retry_after_seconds=runtime.config.queue.background_retry_after_seconds,
+                )
+            except QueueTimeoutError:
+                return error_response(
+                    status_code=504,
+                    message="queued background request expired before execution",
+                    error_type="computecop_queue_timeout",
+                    correlation_id=metadata.correlation_id,
+                    retry_after_seconds=runtime.config.queue.background_retry_after_seconds,
+                )
+
+        return await runtime.scheduler.execute_immediate(metadata, forward)
+    finally:
+        latency = monotonic() - start_time
+        await runtime.state.record_request_latency(latency)
 
 
 async def _forward_upstream(
@@ -447,6 +458,8 @@ async def _forward_upstream(
         shaped_body, shaping_headers = _shape_body(family, body, decision.budget)
     else:
         shaped_body = body
+    shaped = shaping_headers.get("x-computecop-budget-shaped") == "true"
+    await runtime.state.record_shaping(shaped=shaped)
     headers = dict(request.headers)
     headers["x-computecop-correlation-id"] = metadata.correlation_id
     headers["x-computecop-juice-level"] = str(decision.budget.juice_level)
@@ -506,13 +519,18 @@ async def _forward_upstream(
                 )
 
             # Non-streaming request
-            upstream = await runtime.upstream.request(
-                route,
-                method=request.method,
-                path=upstream_path,
-                headers=headers,
-                json_body=shaped_body,
-            )
+            upstream_start = monotonic()
+            try:
+                upstream = await runtime.upstream.request(
+                    route,
+                    method=request.method,
+                    path=upstream_path,
+                    headers=headers,
+                    json_body=shaped_body,
+                )
+            finally:
+                duration = monotonic() - upstream_start
+                await runtime.state.record_upstream_duration(duration)
             runtime.endpoint_registry.record_upstream_success(route.name)
             await runtime.concurrency_governor.release(route.name, foreground=foreground)
             capacity_acquired = False
@@ -918,6 +936,7 @@ async def _tracked_stream(
     stream: AsyncIterator[bytes],
     endpoint_release: Callable[[], Awaitable[None]] | None = None,
 ) -> AsyncIterator[bytes]:
+    start_time = monotonic()
     try:
         async for chunk in stream:
             yield chunk
@@ -926,6 +945,8 @@ async def _tracked_stream(
         runtime.endpoint_registry.record_upstream_failure(route_name)
         raise
     finally:
+        duration = monotonic() - start_time
+        await runtime.state.record_upstream_duration(duration)
         if endpoint_release is not None:
             await endpoint_release()
 
