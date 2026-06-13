@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-from time import monotonic
+
 import httpx
 import pytest
-
-from computecop.app import create_app
-from computecop.config import EndpointConfig, RuntimeConfig
-from computecop.models import EndpointKind, EndpointRoute
-from computecop.state import RuntimeStateStore
 from tests.test_proxy import FakeUpstream, _app
+
+from computecop.state import RuntimeStateStore
+
 
 @pytest.mark.asyncio
 async def test_runtime_state_store_metrics() -> None:
@@ -24,10 +21,10 @@ async def test_runtime_state_store_metrics() -> None:
     assert "shaping" in snapshot.metrics
 
     # Test record request latency
-    await store.record_request_latency(0.05) # bucket 0.1s
+    await store.record_request_latency(0.05)  # bucket 0.1s
     await store.record_request_latency(0.4)  # bucket 0.5s
-    await store.record_request_latency(12.0) # bucket 30.0s
-    await store.record_request_latency(70.0) # bucket > 60s (+inf)
+    await store.record_request_latency(12.0)  # bucket 30.0s
+    await store.record_request_latency(70.0)  # bucket > 60s (+inf)
 
     # Test record queue wait time
     await store.record_queue_wait_time(0.08)

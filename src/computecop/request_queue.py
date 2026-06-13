@@ -87,9 +87,7 @@ class AsyncRequestQueue:
 
         self._change_callback = callback
 
-    def set_wait_time_callback(
-        self, callback: Callable[[float], Awaitable[None] | None]
-    ) -> None:
+    def set_wait_time_callback(self, callback: Callable[[float], Awaitable[None] | None]) -> None:
         """Register a callback invoked when queue wait time is measured."""
 
         self._wait_time_callback = callback

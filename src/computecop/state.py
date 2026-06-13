@@ -204,9 +204,7 @@ class RuntimeStateStore:
     async def snapshot(self) -> RuntimeSnapshot:
         async with self._lock:
             shaping_ratio = (
-                self._shaped_requests / self._total_requests
-                if self._total_requests > 0
-                else 0.0
+                self._shaped_requests / self._total_requests if self._total_requests > 0 else 0.0
             )
             metrics_dict = {
                 "request_latency_histogram": {
