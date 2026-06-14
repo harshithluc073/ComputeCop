@@ -350,4 +350,3 @@ def test_cli_run_with_profile_option(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert captured_config.profile.value == "low-memory"
     assert captured_config.policy.max_background_concurrency == 1
     assert captured_config.policy.base_context_tokens == 4096
-

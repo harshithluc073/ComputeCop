@@ -67,7 +67,7 @@ PROFILES: dict[ProfileName, dict[str, Any]] = {
         "policy": {
             "cpu_pressure_percent": 60.0,
             "max_background_concurrency": 1,
-        }
+        },
     },
     ProfileName.THERMAL_SAFE: {
         "policy": {
@@ -380,8 +380,8 @@ def load_effective_config(
 
     try:
         profile_name = ProfileName(profile_name_str)
-    except ValueError:
-        raise ConfigError(f"invalid profile name: '{profile_name_str}'")
+    except ValueError as exc:
+        raise ConfigError(f"invalid profile name: '{profile_name_str}'") from exc
 
     # 2. Start with default config data
     data = _default_config_data()

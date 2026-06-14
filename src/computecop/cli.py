@@ -15,7 +15,14 @@ from rich.console import Console
 from rich.table import Table
 
 from computecop.app import build_runtime, create_app
-from computecop.config import ConfigError, EffectiveConfig, load_config, load_effective_config
+from computecop.config import (
+    PROFILES,
+    ConfigError,
+    EffectiveConfig,
+    ProfileName,
+    load_config,
+    load_effective_config,
+)
 from computecop.dashboard import Dashboard
 from computecop.doctor import CheckStatus, DiagnosticReport, run_diagnostics
 from computecop.events import (
@@ -479,8 +486,6 @@ def profiles_list(
 ) -> None:
     """List all available policy profiles."""
 
-    from computecop.config import ProfileName
-    
     if json_output:
         profile_names = [p.value for p in ProfileName]
         Console().print_json(json.dumps({"profiles": profile_names}))
@@ -489,19 +494,25 @@ def profiles_list(
     table = Table(title="ComputeCop Built-In Profiles")
     table.add_column("Profile")
     table.add_column("Description")
-    
+
     descriptions = {
         ProfileName.BALANCED: "Balanced defaults for general workloads.",
         ProfileName.FOREGROUND_FIRST: "Prioritizes user prompts, limits background concurrency.",
-        ProfileName.BACKGROUND_THROUGHPUT: "Optimizes background agent throughput and limits concurrency less aggressively.",
-        ProfileName.BATTERY_SAVER: "Conserves power by limiting CPU pressure threshold and concurrency.",
+        ProfileName.BACKGROUND_THROUGHPUT: (
+            "Optimizes background agent throughput and limits concurrency less aggressively."
+        ),
+        ProfileName.BATTERY_SAVER: (
+            "Conserves power by limiting CPU pressure threshold and concurrency."
+        ),
         ProfileName.THERMAL_SAFE: "Prevents overheating by lowering thermal pressure thresholds.",
-        ProfileName.LOW_MEMORY: "Optimizes for low RAM hosts by shrinking token budgets and limits.",
+        ProfileName.LOW_MEMORY: (
+            "Optimizes for low RAM hosts by shrinking token budgets and limits."
+        ),
     }
-    
+
     for name in ProfileName:
         table.add_row(name.value, descriptions.get(name, "-"))
-        
+
     Console().print(table)
 
 
@@ -512,16 +523,14 @@ def profiles_show(
 ) -> None:
     """Show the configuration details for a specific profile."""
 
-    from computecop.config import ProfileName, PROFILES
-    
     try:
         profile_name = ProfileName(name)
-    except ValueError:
+    except ValueError as exc:
         Console().print(f"[red]Error: Unknown profile name '{name}'[/red]")
-        raise typer.Exit(code=1)
-        
+        raise typer.Exit(code=1) from exc
+
     overlay = PROFILES[profile_name]
-    
+
     if json_output:
         Console().print_json(json.dumps(overlay))
         return
@@ -535,9 +544,9 @@ def profiles_show(
     table.add_column("Category")
     table.add_column("Setting")
     table.add_column("Value")
-    
+
     for category, settings in overlay.items():
         for key, val in settings.items():
             table.add_row(category, key, str(val))
-            
+
     Console().print(table)

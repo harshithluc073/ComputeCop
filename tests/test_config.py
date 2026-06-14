@@ -181,4 +181,3 @@ base_context_tokens = 8192
     # 5. Invalid profile name raises ConfigError
     with pytest.raises(ConfigError, match="invalid profile name"):
         load_config(cli_overrides={"profile": "invalid-profile-name"})
-
