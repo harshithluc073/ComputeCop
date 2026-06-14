@@ -138,3 +138,47 @@ def test_effective_config_explain_entries(tmp_path: Path, monkeypatch: pytest.Mo
     document = effective.explain_document()
     assert document["config_path"] == str(config_file)
     assert any(entry["path"] == "server.port" for entry in document["entries"])
+
+
+def test_load_config_profiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 1. Balanced profile by default
+    monkeypatch.delenv("COMPUTECOP_PROFILE", raising=False)
+    monkeypatch.delenv(CONFIG_ENV_VAR, raising=False)
+    config = load_config()
+    assert config.profile.value == "balanced"
+
+    # 2. Foreground-first via CLI overrides
+    config_fg = load_config(cli_overrides={"profile": "foreground-first"})
+    assert config_fg.profile.value == "foreground-first"
+    assert config_fg.policy.max_background_concurrency == 1
+    assert config_fg.policy.ram_yield_percent == 80.0
+
+    # 3. Low-memory via Environment variable
+    monkeypatch.setenv("COMPUTECOP_PROFILE", "low-memory")
+    config_lm = load_config()
+    assert config_lm.profile.value == "low-memory"
+    assert config_lm.policy.ram_yield_percent == 75.0
+    assert config_lm.policy.base_context_tokens == 4096
+
+    # 4. Profile user overrides (low-memory profile, but override context tokens in TOML)
+    config_file = tmp_path / "computecop.toml"
+    config_file.write_text(
+        """
+profile = "low-memory"
+[policy]
+base_context_tokens = 8192
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("COMPUTECOP_PROFILE", raising=False)
+    effective = load_effective_config(config_path=config_file)
+    assert effective.config.profile.value == "low-memory"
+    assert effective.config.policy.ram_yield_percent == 75.0  # from profile
+    assert effective.config.policy.base_context_tokens == 8192  # overridden by TOML
+    assert effective.sources["policy.ram_yield_percent"] == ConfigSource.DEFAULT
+    assert effective.sources["policy.base_context_tokens"] == ConfigSource.TOML
+
+    # 5. Invalid profile name raises ConfigError
+    with pytest.raises(ConfigError, match="invalid profile name"):
+        load_config(cli_overrides={"profile": "invalid-profile-name"})
+
