@@ -467,5 +467,3 @@ async def test_scheduler_no_counter_drift_after_cancellation() -> None:
     finally:
         await scheduler.queue.close()
         await scheduler.stop()
-
-
