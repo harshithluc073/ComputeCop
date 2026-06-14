@@ -32,6 +32,63 @@ class ConfigSource(str, Enum):
     CLI = "cli"
 
 
+class ProfileName(str, Enum):
+    """Name of a pre-configured policy profile."""
+
+    BALANCED = "balanced"
+    FOREGROUND_FIRST = "foreground-first"
+    BACKGROUND_THROUGHPUT = "background-throughput"
+    BATTERY_SAVER = "battery-saver"
+    THERMAL_SAFE = "thermal-safe"
+    LOW_MEMORY = "low-memory"
+
+
+PROFILES: dict[ProfileName, dict[str, Any]] = {
+    ProfileName.BALANCED: {},
+    ProfileName.FOREGROUND_FIRST: {
+        "policy": {
+            "ram_yield_percent": 80.0,
+            "ram_recover_percent": 72.0,
+            "max_background_concurrency": 1,
+            "max_foreground_concurrency": 4,
+        }
+    },
+    ProfileName.BACKGROUND_THROUGHPUT: {
+        "policy": {
+            "ram_yield_percent": 90.0,
+            "ram_recover_percent": 82.0,
+            "max_background_concurrency": 4,
+        }
+    },
+    ProfileName.BATTERY_SAVER: {
+        "telemetry": {
+            "interval_seconds": 3.0,
+        },
+        "policy": {
+            "cpu_pressure_percent": 60.0,
+            "max_background_concurrency": 1,
+        }
+    },
+    ProfileName.THERMAL_SAFE: {
+        "policy": {
+            "thermal_warm_celsius": 65.0,
+            "thermal_hot_celsius": 75.0,
+            "thermal_critical_celsius": 80.0,
+            "max_background_concurrency": 1,
+        }
+    },
+    ProfileName.LOW_MEMORY: {
+        "policy": {
+            "ram_yield_percent": 75.0,
+            "ram_recover_percent": 68.0,
+            "max_background_concurrency": 1,
+            "base_context_tokens": 4096,
+            "base_output_tokens": 1024,
+        }
+    },
+}
+
+
 class EndpointConfig(BaseModel):
     """User-configurable upstream endpoint."""
 
@@ -194,6 +251,7 @@ class ServerConfig(BaseModel):
 class RuntimeConfig(BaseModel):
     """Complete ComputeCop runtime configuration."""
 
+    profile: ProfileName = ProfileName.BALANCED
     server: ServerConfig = Field(default_factory=ServerConfig)
     endpoint_registry: EndpointRegistryConfig = Field(default_factory=EndpointRegistryConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
@@ -304,16 +362,45 @@ def load_effective_config(
 
     env = environ or os.environ
     resolved_path = resolve_config_path(config_path, environ=env)
-    data = _default_config_data()
-    sources = {path: ConfigSource.DEFAULT for path in _leaf_paths(data)}
 
+    # 1. Parse overlays temporarily to find the effective profile name
+    toml_overlay = {}
     if resolved_path is not None:
         toml_overlay = _load_toml_config(resolved_path)
+
+    env_overlay = _env_config_overlay(env)
+
+    profile_name_str = "balanced"
+    if toml_overlay and "profile" in toml_overlay:
+        profile_name_str = toml_overlay["profile"]
+    if env_overlay and "profile" in env_overlay:
+        profile_name_str = env_overlay["profile"]
+    if cli_overrides and "profile" in cli_overrides:
+        profile_name_str = cli_overrides["profile"]
+
+    try:
+        profile_name = ProfileName(profile_name_str)
+    except ValueError:
+        raise ConfigError(f"invalid profile name: '{profile_name_str}'")
+
+    # 2. Start with default config data
+    data = _default_config_data()
+    # Set the selected profile
+    data["profile"] = profile_name.value
+
+    # 3. Apply profile defaults
+    profile_overlay = PROFILES.get(profile_name, {})
+    data = _deep_merge(data, profile_overlay)
+
+    # All these merged values starting from profile overlays are treated as DEFAULT source
+    sources = {path: ConfigSource.DEFAULT for path in _leaf_paths(data)}
+
+    # 4. Merge overlays and track sources
+    if resolved_path is not None:
         data = _deep_merge(data, toml_overlay)
         for path in _leaf_paths(toml_overlay):
             sources[path] = ConfigSource.TOML
 
-    env_overlay = _env_config_overlay(env)
     if env_overlay:
         data = _deep_merge(data, env_overlay)
         for path in _leaf_paths(env_overlay):
@@ -452,6 +539,9 @@ def _optional_bool_env(name: str, environ: Mapping[str, str]) -> bool | None:
 
 def _env_config_overlay(environ: Mapping[str, str]) -> dict[str, Any]:
     overlay: dict[str, Any] = {}
+
+    if (profile := _optional_str_env("COMPUTECOP_PROFILE", environ)) is not None:
+        overlay["profile"] = profile
 
     server: dict[str, Any] = {}
     if (host := _optional_str_env("COMPUTECOP_HOST", environ)) is not None:
