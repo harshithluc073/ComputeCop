@@ -40,6 +40,8 @@ events_app = typer.Typer(help="Inspect persisted ComputeCop runtime events.")
 app.add_typer(events_app, name="events")
 queue_app = typer.Typer(help="Control and inspect the background request queue.")
 app.add_typer(queue_app, name="queue")
+profiles_app = typer.Typer(help="Manage and inspect policy profiles.")
+app.add_typer(profiles_app, name="profiles")
 
 
 class CliContext:
@@ -187,10 +189,11 @@ def run(
     host: str | None = typer.Option(None, help="Host to bind."),
     port: int | None = typer.Option(None, min=1, max=65535, help="Port to bind."),
     log_level: str | None = typer.Option(None, help="Logging level."),
+    profile: str | None = typer.Option(None, help="Policy profile to run with."),
 ) -> None:
     """Run the ComputeCop proxy server."""
 
-    cli_overrides = _cli_overrides(host=host, port=port, log_level=log_level)
+    cli_overrides = _cli_overrides(host=host, port=port, log_level=log_level, profile=profile)
     config = _load_or_exit(ctx, cli_overrides=cli_overrides)
     configure_logging(config.log_level)
     bind_host = host or config.server.host
@@ -398,6 +401,7 @@ def _cli_overrides(
     host: str | None,
     port: int | None,
     log_level: str | None,
+    profile: str | None = None,
 ) -> dict[str, Any] | None:
     overrides: dict[str, Any] = {}
     server: dict[str, Any] = {}
@@ -409,6 +413,8 @@ def _cli_overrides(
         overrides["server"] = server
     if log_level is not None:
         overrides["log_level"] = log_level.upper()
+    if profile is not None:
+        overrides["profile"] = profile
     return overrides or None
 
 
@@ -465,3 +471,73 @@ def _send_queue_command(ctx: typer.Context, command: str) -> None:
     except Exception as exc:
         console.print(f"[red]Could not connect to ComputeCop daemon at {url}: {exc}[/red]")
         raise typer.Exit(code=1) from None
+
+
+@profiles_app.command("list")
+def profiles_list(
+    json_output: bool = typer.Option(False, "--json", help="Emit profiles as JSON."),
+) -> None:
+    """List all available policy profiles."""
+
+    from computecop.config import ProfileName
+    
+    if json_output:
+        profile_names = [p.value for p in ProfileName]
+        Console().print_json(json.dumps({"profiles": profile_names}))
+        return
+
+    table = Table(title="ComputeCop Built-In Profiles")
+    table.add_column("Profile")
+    table.add_column("Description")
+    
+    descriptions = {
+        ProfileName.BALANCED: "Balanced defaults for general workloads.",
+        ProfileName.FOREGROUND_FIRST: "Prioritizes user prompts, limits background concurrency.",
+        ProfileName.BACKGROUND_THROUGHPUT: "Optimizes background agent throughput and limits concurrency less aggressively.",
+        ProfileName.BATTERY_SAVER: "Conserves power by limiting CPU pressure threshold and concurrency.",
+        ProfileName.THERMAL_SAFE: "Prevents overheating by lowering thermal pressure thresholds.",
+        ProfileName.LOW_MEMORY: "Optimizes for low RAM hosts by shrinking token budgets and limits.",
+    }
+    
+    for name in ProfileName:
+        table.add_row(name.value, descriptions.get(name, "-"))
+        
+    Console().print(table)
+
+
+@profiles_app.command("show")
+def profiles_show(
+    name: str = typer.Argument(..., help="Name of the profile to inspect."),
+    json_output: bool = typer.Option(False, "--json", help="Emit profile configuration as JSON."),
+) -> None:
+    """Show the configuration details for a specific profile."""
+
+    from computecop.config import ProfileName, PROFILES
+    
+    try:
+        profile_name = ProfileName(name)
+    except ValueError:
+        Console().print(f"[red]Error: Unknown profile name '{name}'[/red]")
+        raise typer.Exit(code=1)
+        
+    overlay = PROFILES[profile_name]
+    
+    if json_output:
+        Console().print_json(json.dumps(overlay))
+        return
+
+    if not overlay:
+        Console().print(f"[bold]{profile_name.value}[/bold] (Balanced)")
+        Console().print("Uses all system defaults.")
+        return
+
+    table = Table(title=f"Profile Details: {profile_name.value}")
+    table.add_column("Category")
+    table.add_column("Setting")
+    table.add_column("Value")
+    
+    for category, settings in overlay.items():
+        for key, val in settings.items():
+            table.add_row(category, key, str(val))
+            
+    Console().print(table)

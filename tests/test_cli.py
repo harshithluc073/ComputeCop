@@ -285,3 +285,69 @@ def test_cli_queue_commands(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
     result_resume = CliRunner().invoke(app, ["queue", "resume"])
     assert result_resume.exit_code == 0
     assert "Successfully resumed" in result_resume.output
+
+
+def test_cli_profiles_list() -> None:
+    # 1. Standard list
+    result = CliRunner().invoke(app, ["profiles", "list"])
+    assert result.exit_code == 0
+    assert "Built-In Profiles" in result.output
+    assert "low-memory" in result.output
+    assert "battery-saver" in result.output
+
+    # 2. JSON list
+    result_json = CliRunner().invoke(app, ["profiles", "list", "--json"])
+    assert result_json.exit_code == 0
+    parsed = json.loads(result_json.output)
+    assert "low-memory" in parsed["profiles"]
+    assert "balanced" in parsed["profiles"]
+
+
+def test_cli_profiles_show() -> None:
+    # 1. Balanced profile show (no overrides)
+    result_bal = CliRunner().invoke(app, ["profiles", "show", "balanced"])
+    assert result_bal.exit_code == 0
+    assert "balanced" in result_bal.output
+    assert "system defaults" in result_bal.output
+
+    # 2. Specific profile show (shows table of values)
+    result_lm = CliRunner().invoke(app, ["profiles", "show", "low-memory"])
+    assert result_lm.exit_code == 0
+    assert "low-memory" in result_lm.output
+    assert "base_context_tokens" in result_lm.output
+    assert "4096" in result_lm.output
+
+    # 3. JSON output show
+    result_json = CliRunner().invoke(app, ["profiles", "show", "low-memory", "--json"])
+    assert result_json.exit_code == 0
+    parsed = json.loads(result_json.output)
+    assert parsed["policy"]["base_context_tokens"] == 4096
+
+    # 4. Invalid profile name show
+    result_err = CliRunner().invoke(app, ["profiles", "show", "invalid-profile"])
+    assert result_err.exit_code == 1
+    assert "Unknown profile name" in result_err.output
+
+
+def test_cli_run_with_profile_option(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    captured_config = None
+
+    def fake_create_app(config):
+        nonlocal captured_config
+        captured_config = config
+        return "fake_app"
+
+    def fake_uvicorn_run(app, **kwargs):
+        pass
+
+    monkeypatch.setattr("computecop.cli.create_app", fake_create_app)
+    monkeypatch.setattr("uvicorn.run", fake_uvicorn_run)
+    monkeypatch.setattr("computecop.cli.configure_logging", lambda *_, **__: None)
+
+    result = CliRunner().invoke(app, ["run", "--profile", "low-memory"])
+    assert result.exit_code == 0
+    assert captured_config is not None
+    assert captured_config.profile.value == "low-memory"
+    assert captured_config.policy.max_background_concurrency == 1
+    assert captured_config.policy.base_context_tokens == 4096
+
