@@ -287,3 +287,185 @@ def _scheduler(*, policy: PolicyConfig | None = None) -> AdaptiveScheduler:
 
 async def _answer(value: str) -> str:
     return value
+
+
+@pytest.mark.asyncio
+async def test_scheduler_stress_many_requests() -> None:
+    queue_config = QueueConfig(max_size=100, aging_interval_seconds=0.1)
+    policy_config = PolicyConfig(max_foreground_concurrency=4, max_background_concurrency=4)
+    queue = AsyncRequestQueue(queue_config)
+    scheduler = AdaptiveScheduler(queue, policy_config=policy_config, queue_config=queue_config)
+
+    await scheduler.start()
+
+    active_bg_runs = 0
+    max_concurrent_bg = 0
+    bg_lock = asyncio.Lock()
+
+    async def runner_bg(idx: int) -> int:
+        nonlocal active_bg_runs, max_concurrent_bg
+        async with bg_lock:
+            active_bg_runs += 1
+            if active_bg_runs > max_concurrent_bg:
+                max_concurrent_bg = active_bg_runs
+        await asyncio.sleep(0.01)
+        async with bg_lock:
+            active_bg_runs -= 1
+        return idx
+
+    async def runner_fg(idx: int) -> int:
+        await asyncio.sleep(0.01)
+        return idx
+
+    try:
+        bg_tasks = [
+            scheduler.execute_queued(
+                _metadata(correlation_id=f"bg-{i}", priority=RequestPriority.BACKGROUND),
+                lambda i=i: runner_bg(i),
+            )
+            for i in range(50)
+        ]
+
+        fg_tasks = [
+            scheduler.execute_immediate(
+                _metadata(
+                    priority=RequestPriority.FOREGROUND,
+                    request_class=RequestClass.USER_PROMPT,
+                    correlation_id=f"fg-{i}",
+                ),
+                lambda i=i: runner_fg(i + 100),
+            )
+            for i in range(10)
+        ]
+
+        results = await asyncio.gather(*(bg_tasks + fg_tasks))
+
+        assert len(results) == 60
+        assert max_concurrent_bg <= 4
+
+        snapshot = scheduler.snapshot()
+        assert snapshot.running_foreground == 0
+        assert snapshot.running_background == 0
+        assert snapshot.queued_executions == 0
+        assert snapshot.immediate_executions == 0
+
+    finally:
+        await scheduler.queue.close()
+        await scheduler.stop()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_mock_failures_and_recoveries() -> None:
+    queue_config = QueueConfig(max_size=10, aging_interval_seconds=0.1)
+    policy_config = PolicyConfig(max_foreground_concurrency=2, max_background_concurrency=2)
+    queue = AsyncRequestQueue(queue_config)
+    scheduler = AdaptiveScheduler(queue, policy_config=policy_config, queue_config=queue_config)
+
+    await scheduler.start()
+
+    async def failing_runner() -> str:
+        await asyncio.sleep(0.01)
+        raise ValueError("simulated endpoint failure")
+
+    async def succeeding_runner() -> str:
+        await asyncio.sleep(0.01)
+        return "success"
+
+    try:
+        with pytest.raises(ValueError, match="simulated endpoint failure"):
+            await scheduler.execute_queued(
+                _metadata(correlation_id="fail-1"),
+                failing_runner,
+            )
+
+        snapshot_after_failure = scheduler.snapshot()
+        assert snapshot_after_failure.running_background == 0
+        assert snapshot_after_failure.queued_executions == 0
+
+        res = await scheduler.execute_queued(
+            _metadata(correlation_id="success-1"),
+            succeeding_runner,
+        )
+        assert res == "success"
+
+        snapshot_after_success = scheduler.snapshot()
+        assert snapshot_after_success.running_background == 0
+        assert snapshot_after_success.queued_executions == 0
+
+    finally:
+        await scheduler.queue.close()
+        await scheduler.stop()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_no_counter_drift_after_cancellation() -> None:
+    queue_config = QueueConfig(max_size=10, aging_interval_seconds=0.1)
+    policy_config = PolicyConfig(max_foreground_concurrency=1, max_background_concurrency=1)
+    queue = AsyncRequestQueue(queue_config)
+    scheduler = AdaptiveScheduler(queue, policy_config=policy_config, queue_config=queue_config)
+
+    await scheduler.start()
+
+    start_event = asyncio.Event()
+    finish_event = asyncio.Event()
+
+    async def slow_runner() -> str:
+        start_event.set()
+        try:
+            await finish_event.wait()
+            return "done"
+        except asyncio.CancelledError:
+            raise
+
+    async def queued_runner() -> str:
+        return "queued-done"
+
+    try:
+        first_task = asyncio.create_task(
+            scheduler.execute_queued(_metadata(correlation_id="slow"), slow_runner)
+        )
+        await start_event.wait()
+
+        second_task = asyncio.create_task(
+            scheduler.execute_queued(_metadata(correlation_id="queued"), queued_runner)
+        )
+        await asyncio.sleep(0.05)
+
+        snapshot_before = scheduler.snapshot()
+        assert snapshot_before.running_background == 1
+        assert snapshot_before.queued_executions == 2
+
+        second_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second_task
+
+        snapshot_after_cancel_queued = scheduler.snapshot()
+        assert snapshot_after_cancel_queued.running_background == 1
+        assert snapshot_after_cancel_queued.queued_executions == 1
+
+        first_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first_task
+
+        snapshot_while_blocked = scheduler.snapshot()
+        assert snapshot_while_blocked.running_background == 1
+
+        finish_event.set()
+        await asyncio.sleep(0.05)
+
+        snapshot_after_finish = scheduler.snapshot()
+        assert snapshot_after_finish.running_background == 0
+        assert snapshot_after_finish.queued_executions == 0
+
+        res = await scheduler.execute_queued(_metadata(correlation_id="test-new"), queued_runner)
+        assert res == "queued-done"
+
+        snapshot_final = scheduler.snapshot()
+        assert snapshot_final.running_background == 0
+        assert snapshot_final.queued_executions == 0
+
+    finally:
+        await scheduler.queue.close()
+        await scheduler.stop()
+
+
