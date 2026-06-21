@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ComputeCop Control Plane</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #09090b;
+            --bg-secondary: #18181b;
+            --bg-tertiary: #27272a;
+            --border-color: #27272a;
+            --text-primary: #f4f4f5;
+            --text-secondary: #a1a1aa;
+            --accent: #6366f1;
+            --accent-hover: #4f46e5;
+            --green: #10b981;
+            --green-glow: rgba(16, 185, 129, 0.15);
+            --amber: #f59e0b;
+            --amber-glow: rgba(245, 158, 11, 0.15);
+            --red: #ef4444;
+            --red-glow: rgba(239, 68, 68, 0.15);
+            --font-main: 'Outfit', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: var(--font-main);
+            line-height: 1.5;
+            padding: 2rem;
+            min-height: 100vh;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .logo-area {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .logo-icon {
+            width: 2.5rem;
+            height: 2.5rem;
+            background: linear-gradient(135deg, var(--accent), #ec4899);
+            border-radius: 0.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 1.25rem;
+            box-shadow: 0 0 20px rgba(99, 102, 241, 0.4);
+            animation: pulse-glow 2s infinite alternate;
+        }
+
+        h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #ffffff, var(--text-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            padding: 0.5rem 1rem;
+            border-radius: 2rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .pulse-dot {
+            width: 0.5rem;
+            height: 0.5rem;
+            background-color: var(--green);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--green);
+            animation: pulse-dot 1.5s infinite;
+        }
+
+        .grid-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        @media (max-width: 1024px) {
+            .grid-container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 1rem;
+            padding: 1.5rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            transition: transform 0.2s, border-color 0.2s;
+        }
+
+        .card:hover {
+            border-color: rgba(99, 102, 241, 0.3);
+        }
+
+        .card-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 1.25rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px dashed var(--border-color);
+            padding-bottom: 0.75rem;
+            color: #ffffff;
+        }
+
+        .telemetry-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .telemetry-label {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        .telemetry-value {
+            font-weight: 600;
+            font-family: var(--font-mono);
+        }
+
+        /* Progress bars */
+        .progress-container {
+            width: 100%;
+            height: 0.5rem;
+            background-color: var(--bg-tertiary);
+            border-radius: 1rem;
+            overflow: hidden;
+            margin-top: 0.5rem;
+        }
+
+        .progress-bar {
+            height: 100%;
+            width: 0%;
+            border-radius: 1rem;
+            transition: width 0.5s ease-in-out, background-color 0.5s;
+        }
+
+        /* Juice Level Gauge styling */
+        .juice-gauge-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem 0;
+        }
+
+        .juice-value {
+            font-size: 3rem;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            line-height: 1;
+            margin-bottom: 0.25rem;
+        }
+
+        .juice-label {
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        /* Endpoints Table */
+        .endpoint-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .endpoint-card {
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .endpoint-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .endpoint-name {
+            font-weight: 600;
+            font-size: 1rem;
+        }
+
+        .endpoint-kind {
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .endpoint-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .endpoint-badge {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-healthy {
+            background-color: var(--green-glow);
+            color: var(--green);
+        }
+
+        .badge-degraded {
+            background-color: var(--amber-glow);
+            color: var(--amber);
+        }
+
+        .badge-offline {
+            background-color: var(--red-glow);
+            color: var(--red);
+        }
+
+        .endpoint-latency {
+            font-family: var(--font-mono);
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+        }
+
+        /* Queue inspect layout */
+        .queue-summary {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+            padding: 0.75rem;
+            background-color: var(--bg-tertiary);
+            border-radius: 0.5rem;
+            font-size: 0.875rem;
+        }
+
+        .queue-list {
+            max-height: 250px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .queue-item {
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            padding: 0.75rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.875rem;
+        }
+
+        .queue-item-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .queue-item-id {
+            font-family: var(--font-mono);
+            font-weight: 500;
+        }
+
+        .queue-item-meta {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+
+        .queue-empty-state {
+            text-align: center;
+            padding: 2rem 0;
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        /* Event logs */
+        .events-container {
+            grid-column: span 2;
+        }
+
+        @media (max-width: 1024px) {
+            .events-container {
+                grid-column: span 1;
+            }
+        }
+
+        .events-list {
+            max-height: 350px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            font-family: var(--font-mono);
+            font-size: 0.825rem;
+            background-color: #0c0c0e;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid var(--border-color);
+        }
+
+        .event-line {
+            display: flex;
+            gap: 1rem;
+            padding: 0.25rem 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+        }
+
+        .event-time {
+            color: #6366f1;
+            flex-shrink: 0;
+        }
+
+        .event-msg {
+            color: var(--text-primary);
+            word-break: break-all;
+        }
+
+        /* Search Decision ID */
+        .search-container {
+            margin-bottom: 2rem;
+            display: flex;
+            gap: 0.75rem;
+        }
+
+        .search-input {
+            flex-grow: 1;
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            padding: 0.75rem 1rem;
+            color: var(--text-primary);
+            font-family: var(--font-mono);
+            font-size: 0.875rem;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .search-input:focus {
+            border-color: var(--accent);
+        }
+
+        .search-btn {
+            background-color: var(--accent);
+            color: white;
+            border: none;
+            border-radius: 0.5rem;
+            padding: 0.75rem 1.5rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .search-btn:hover {
+            background-color: var(--accent-hover);
+        }
+
+        /* Modal / Panel for Decision Detail */
+        .decision-detail-card {
+            margin-top: 1rem;
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            display: none;
+            animation: fadeIn 0.3s;
+        }
+
+        .decision-json {
+            font-family: var(--font-mono);
+            font-size: 0.825rem;
+            white-space: pre-wrap;
+            overflow-x: auto;
+            color: #c9d1d9;
+            background-color: #0c0c0e;
+            padding: 0.75rem;
+            border-radius: 0.25rem;
+            max-height: 300px;
+            margin-top: 0.75rem;
+        }
+
+        @keyframes pulse-glow {
+            0% { box-shadow: 0 0 15px rgba(99, 102, 241, 0.3); }
+            100% { box-shadow: 0 0 25px rgba(99, 102, 241, 0.6); }
+        }
+
+        @keyframes pulse-dot {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Scrollbar styles */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--bg-tertiary);
+            border-radius: 3px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #4a4a4a;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo-area">
+            <div class="logo-icon">CC</div>
+            <div>
+                <h1>ComputeCop</h1>
+                <p style="font-size: 0.75rem; color: var(--text-secondary);">Traffic Control Plane Dashboard</p>
+            </div>
+        </div>
+        <div class="status-badge">
+            <div class="pulse-dot"></div>
+            <span>System Active</span>
+        </div>
+    </header>
+
+    <!-- Search for Decision traces -->
+    <div class="search-container">
+        <input type="text" id="correlation-input" class="search-input" placeholder="Search admission trace by correlation ID...">
+        <button id="search-btn" class="search-btn">Inspect Trace</button>
+    </div>
+
+    <div id="decision-detail" class="decision-detail-card">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <h4 style="color:var(--accent);">Admission Decision Details</h4>
+            <button onclick="closeDecisionDetail()" style="background:none; border:none; color:var(--text-secondary); cursor:pointer; font-weight:bold;">✕ Close</button>
+        </div>
+        <pre id="decision-content" class="decision-json"></pre>
+    </div>
+
+    <div class="grid-container">
+        <!-- Telemetry Panel -->
+        <div class="card">
+            <div class="card-title">
+                <span>System Telemetry</span>
+                <span id="telemetry-time" style="font-size: 0.8rem; color: var(--text-secondary);">--:--:--</span>
+            </div>
+            
+            <div class="juice-gauge-wrapper">
+                <div class="juice-value" id="juice-level">--%</div>
+                <div class="juice-label">Juice Level</div>
+                <div style="width: 70%; margin-top: 0.5rem;" class="progress-container">
+                    <div class="progress-bar" id="juice-progress"></div>
+                </div>
+            </div>
+
+            <div class="telemetry-row" style="margin-top: 1.5rem;">
+                <span class="telemetry-label">RAM Usage</span>
+                <span class="telemetry-value" id="ram-usage">--% (-- / -- GB)</span>
+            </div>
+            <div class="progress-container" style="margin-bottom: 1.25rem;">
+                <div class="progress-bar" id="ram-progress"></div>
+            </div>
+
+            <div class="telemetry-row">
+                <span class="telemetry-label">CPU Usage</span>
+                <span class="telemetry-value" id="cpu-usage">--%</span>
+            </div>
+            <div class="progress-container">
+                <div class="progress-bar" id="cpu-progress"></div>
+            </div>
+        </div>
+
+        <!-- Endpoints Panel -->
+        <div class="card">
+            <div class="card-title">
+                <span>Inference Endpoints</span>
+                <button onclick="refreshEndpoints()" style="background:none; border:none; color:var(--accent); font-size: 0.8rem; cursor:pointer; font-weight:600;">↻ Refresh</button>
+            </div>
+            <div class="endpoint-list" id="endpoint-list-container">
+                <div class="queue-empty-state">Loading endpoints...</div>
+            </div>
+        </div>
+
+        <!-- Active Priority Queue -->
+        <div class="card">
+            <div class="card-title">
+                <span>Active Priority Queue</span>
+                <span id="queue-status-label" class="endpoint-badge badge-healthy" style="text-transform: capitalize;">--</span>
+            </div>
+            <div class="queue-summary">
+                <div>Queue Size: <strong id="queue-size">0</strong> / <span id="queue-capacity">--</span></div>
+                <div>Running Workers: <strong id="queue-workers">0</strong></div>
+            </div>
+            <div class="queue-list" id="queue-list-container">
+                <div class="queue-empty-state">Queue is empty</div>
+            </div>
+        </div>
+
+        <!-- System Stats / Profile Panel -->
+        <div class="card">
+            <div class="card-title">
+                <span>Policy Profile Configuration</span>
+            </div>
+            <div class="telemetry-row">
+                <span class="telemetry-label">Active Profile</span>
+                <span class="telemetry-value" id="active-profile" style="color:var(--accent); text-transform:uppercase;">--</span>
+            </div>
+            <div class="telemetry-row">
+                <span class="telemetry-label">RAM Yield Threshold</span>
+                <span class="telemetry-value" id="ram-yield-threshold">--%</span>
+            </div>
+            <div class="telemetry-row">
+                <span class="telemetry-label">RAM Recovery Threshold</span>
+                <span class="telemetry-value" id="ram-recover-threshold">--%</span>
+            </div>
+            <div class="telemetry-row">
+                <span class="telemetry-label">Max Concurrency Limit</span>
+                <span class="telemetry-value" id="max-concurrency">--</span>
+            </div>
+            <div class="telemetry-row">
+                <span class="telemetry-label">Event Log Path</span>
+                <span class="telemetry-value" id="event-log-path" style="font-size: 0.8rem; max-width: 60%; word-break: break-all; text-align: right;">--</span>
+            </div>
+        </div>
+
+        <!-- Policy Event Log -->
+        <div class="card events-container">
+            <div class="card-title">
+                <span>Admission Decision Log</span>
+                <span style="font-size: 0.8rem; color: var(--text-secondary);">Showing last 100 events</span>
+            </div>
+            <div class="events-list" id="events-list-container">
+                <div class="event-line">
+                    <span class="event-msg">Waiting for events...</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function fetchState() {
+            try {
+                const response = await fetch('/state');
+                if (!response.ok) throw new Error('Failed to fetch state');
+                const data = await response.json();
+                updateStateUI(data);
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function fetchEndpoints(refresh = false) {
+            try {
+                const url = refresh ? '/endpoints?refresh=true' : '/endpoints';
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('Failed to fetch endpoints');
+                const data = await response.json();
+                updateEndpointsUI(data.endpoints);
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function refreshEndpoints() {
+            const container = document.getElementById('endpoint-list-container');
+            container.innerHTML = '<div class="queue-empty-state">Refreshing and probing endpoints...</div>';
+            await fetchEndpoints(true);
+        }
+
+        async function fetchEvents() {
+            try {
+                const response = await fetch('/events?limit=100');
+                if (!response.ok) throw new Error('Failed to fetch events');
+                const data = await response.json();
+                updateEventsUI(data.events);
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function fetchQueue() {
+            try {
+                const response = await fetch('/queue/inspect');
+                if (!response.ok) throw new Error('Failed to fetch queue');
+                const data = await response.json();
+                updateQueueUI(data.queue);
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        async function searchDecision() {
+            const input = document.getElementById('correlation-input');
+            const id = input.value.trim();
+            if (!id) return;
+            const container = document.getElementById('decision-detail');
+            const content = document.getElementById('decision-content');
+            
+            content.textContent = 'Searching...';
+            container.style.display = 'block';
+
+            try {
+                const response = await fetch(`/decisions/${id}`);
+                if (response.status === 404) {
+                    content.textContent = `Correlation ID "${id}" was not found or is expired.`;
+                    return;
+                }
+                const data = await response.json();
+                content.textContent = JSON.stringify(data, null, 2);
+            } catch (err) {
+                content.textContent = `Error inspecting decision: ${err.message}`;
+            }
+        }
+
+        function closeDecisionDetail() {
+            document.getElementById('decision-detail').style.display = 'none';
+        }
+
+        function updateStateUI(state) {
+            // Update time
+            const now = new Date();
+            document.getElementById('telemetry-time').textContent = now.toTimeString().split(' ')[0];
+
+            // Telemetry values
+            const tel = state.telemetry;
+            if (tel) {
+                // Juice Level
+                const juice = Math.round(state.juice_level * 100) || 0;
+                const juiceEl = document.getElementById('juice-level');
+                const juiceProgress = document.getElementById('juice-progress');
+                juiceEl.textContent = `${juice}%`;
+                juiceProgress.style.width = `${juice}%`;
+                
+                if (juice > 75) {
+                    juiceEl.style.color = 'var(--green)';
+                    juiceProgress.style.backgroundColor = 'var(--green)';
+                } else if (juice > 40) {
+                    juiceEl.style.color = 'var(--amber)';
+                    juiceProgress.style.backgroundColor = 'var(--amber)';
+                } else {
+                    juiceEl.style.color = 'var(--red)';
+                    juiceProgress.style.backgroundColor = 'var(--red)';
+                }
+
+                // RAM
+                const ramPercent = Math.round(tel.ram_percent) || 0;
+                const totalRam = (tel.ram_total_bytes / (1024**3)).toFixed(1);
+                const usedRam = (tel.ram_used_bytes / (1024**3)).toFixed(1);
+                document.getElementById('ram-usage').textContent = `${ramPercent}% (${usedRam} / ${totalRam} GB)`;
+                const ramProgress = document.getElementById('ram-progress');
+                ramProgress.style.width = `${ramPercent}%`;
+                ramProgress.style.backgroundColor = ramPercent > 85 ? 'var(--red)' : ramPercent > 70 ? 'var(--amber)' : 'var(--green)';
+
+                // CPU
+                const cpuPercent = Math.round(tel.cpu_percent) || 0;
+                document.getElementById('cpu-usage').textContent = `${cpuPercent}%`;
+                const cpuProgress = document.getElementById('cpu-progress');
+                cpuProgress.style.width = `${cpuPercent}%`;
+                cpuProgress.style.backgroundColor = cpuPercent > 80 ? 'var(--red)' : cpuPercent > 60 ? 'var(--amber)' : 'var(--accent)';
+            }
+
+            // Queue stats
+            const q = state.queue;
+            if (q) {
+                document.getElementById('queue-size').textContent = q.size;
+                document.getElementById('queue-capacity').textContent = q.capacity;
+                document.getElementById('queue-workers').textContent = q.running_workers;
+                
+                const statusLabel = document.getElementById('queue-status-label');
+                statusLabel.textContent = q.lifecycle_state || '--';
+                if (q.lifecycle_state === 'active' || q.lifecycle_state === 'accepting') {
+                    statusLabel.className = 'endpoint-badge badge-healthy';
+                } else if (q.lifecycle_state === 'paused') {
+                    statusLabel.className = 'endpoint-badge badge-degraded';
+                } else {
+                    statusLabel.className = 'endpoint-badge badge-offline';
+                }
+            }
+
+            // Config / Profile summary
+            const conf = state.config;
+            if (conf) {
+                document.getElementById('active-profile').textContent = conf.profile || '--';
+                document.getElementById('ram-yield-threshold').textContent = `${conf.policy?.ram_yield_percent}%`;
+                document.getElementById('ram-recover-threshold').textContent = `${conf.policy?.ram_recover_percent}%`;
+                document.getElementById('max-concurrency').textContent = conf.policy?.max_background_concurrency || '--';
+                document.getElementById('event-log-path').textContent = conf.event_log_path || 'default';
+            }
+        }
+
+        function updateEndpointsUI(endpoints) {
+            const container = document.getElementById('endpoint-list-container');
+            if (!endpoints || endpoints.length === 0) {
+                container.innerHTML = '<div class="queue-empty-state">No endpoints configured</div>';
+                return;
+            }
+
+            let html = '';
+            endpoints.forEach(ep => {
+                const healthy = ep.health?.healthy;
+                const statusText = healthy ? 'Healthy' : 'Offline';
+                const statusClass = healthy ? 'badge-healthy' : 'badge-offline';
+                const latency = ep.health?.latency_ms !== null ? `${ep.health.latency_ms}ms` : '--';
+                const breakerState = ep.health?.circuit_breaker?.state || 'closed';
+                const breakerClass = breakerState === 'open' ? 'badge-offline' : breakerState === 'half-open' ? 'badge-degraded' : 'badge-healthy';
+
+                html += `
+                    <div class="endpoint-card">
+                        <div class="endpoint-info">
+                            <span class="endpoint-name">${ep.name}</span>
+                            <span class="endpoint-kind">${ep.kind} &bull; ${ep.base_url}</span>
+                        </div>
+                        <div class="endpoint-status">
+                            <span class="endpoint-badge ${breakerClass}" style="font-size:0.65rem;">CB: ${breakerState}</span>
+                            <span class="endpoint-badge ${statusClass}">${statusText}</span>
+                            <span class="endpoint-latency">${latency}</span>
+                        </div>
+                    </div>
+                `;
+            });
+            container.innerHTML = html;
+        }
+
+        function updateQueueUI(queueItems) {
+            const container = document.getElementById('queue-list-container');
+            if (!queueItems || queueItems.length === 0) {
+                container.innerHTML = '<div class="queue-empty-state">Queue is empty</div>';
+                return;
+            }
+
+            let html = '';
+            queueItems.forEach(item => {
+                const priorityText = item.priority !== undefined ? `Prio: ${item.priority}` : '';
+                const ageText = item.age_seconds !== undefined ? `Age: ${Math.round(item.age_seconds)}s` : '';
+                html += `
+                    <div class="queue-item">
+                        <div class="queue-item-info">
+                            <span class="queue-item-id">${item.correlation_id}</span>
+                            <span class="queue-item-meta">${item.request_class} &bull; ${item.model_name || 'default'}</span>
+                        </div>
+                        <div style="display:flex; gap:0.5rem; align-items:center;">
+                            <span class="endpoint-badge badge-degraded" style="font-size:0.65rem;">${priorityText}</span>
+                            <span class="queue-item-meta">${ageText}</span>
+                        </div>
+                    </div>
+                `;
+            });
+            container.innerHTML = html;
+        }
+
+        function updateEventsUI(events) {
+            const container = document.getElementById('events-list-container');
+            if (!events || events.length === 0) {
+                container.innerHTML = '<div class="event-line"><span class="event-msg">No admission events recorded yet.</span></div>';
+                return;
+            }
+
+            let html = '';
+            events.forEach(evt => {
+                const date = new Date(evt.timestamp);
+                const timeStr = date.toTimeString().split(' ')[0] + '.' + String(date.getMilliseconds()).padStart(3, '0');
+                
+                // Colorize message slightly if it contains shaped or rejected
+                let colorStyle = '';
+                const lowerMsg = evt.message.toLowerCase();
+                if (lowerMsg.includes('reject') || lowerMsg.includes('fail') || lowerMsg.includes('deny')) {
+                    colorStyle = 'color: var(--red);';
+                } else if (lowerMsg.includes('throttle') || lowerMsg.includes('queue') || lowerMsg.includes('yield') || lowerMsg.includes('shape')) {
+                    colorStyle = 'color: var(--amber);';
+                } else if (lowerMsg.includes('allow') || lowerMsg.includes('admit') || lowerMsg.includes('accept')) {
+                    colorStyle = 'color: var(--green);';
+                }
+
+                html += `
+                    <div class="event-line">
+                        <span class="event-time">[${timeStr}]</span>
+                        <span class="event-msg" style="${colorStyle}">[${evt.correlation_id || 'system'}] ${evt.message}</span>
+                    </div>
+                `;
+            });
+            container.innerHTML = html;
+        }
+
+        // Initialize loops
+        document.getElementById('search-btn').addEventListener('click', searchDecision);
+        document.getElementById('correlation-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') searchDecision();
+        });
+
+        // Run fetch sequences
+        async function runLoop() {
+            await fetchState();
+            await fetchQueue();
+            await fetchEvents();
+        }
+
+        // Run once on load
+        fetchEndpoints();
+        runLoop();
+
+        // Loop every 3 seconds
+        setInterval(runLoop, 3000);
+    </script>
+</body>
+</html>
