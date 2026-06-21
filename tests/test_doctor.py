@@ -218,7 +218,12 @@ async def test_run_diagnostics_collects_all_checks(
         "ram",
         "psutil",
         "endpoints",
+        "endpoint_capabilities",
         "event_log",
+        "port_conflict",
+        "config_conflict",
+        "thermal",
+        "battery",
         "config",
     }
     assert report.ok is True

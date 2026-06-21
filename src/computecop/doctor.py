@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import platform as platform_lib
+import socket
 import sys
 from dataclasses import dataclass
 from enum import Enum
@@ -103,7 +104,12 @@ async def run_diagnostics(
         _check_ram_baseline(effective),
         _check_psutil_access(),
         await _check_endpoint_reachability(effective, probe_endpoints=probe_endpoints),
+        _check_endpoint_capabilities(effective),
         _check_event_log_path(effective),
+        _check_port_conflicts(effective),
+        _check_config_source_conflicts(effective),
+        _check_thermal_sensors(),
+        _check_battery_telemetry(),
         config_check,
     ]
     return DiagnosticReport(checks=tuple(checks))
@@ -312,15 +318,15 @@ def _check_event_log_path(effective: EffectiveConfig | None) -> CheckResult:
 
 def _probe_writable(path: Path) -> tuple[bool, str | None]:
     if path.exists():
-        if os.access(path, os.W_OK):
+        if os.access(path, os.W_OK) and os.access(path, os.R_OK):
             return True, None
-        return False, f"{path} exists but is not writable"
+        return False, f"{path} exists but lacks read/write permissions"
     parent = _first_existing_parent(path)
     if parent is None:
         return False, f"no existing parent directory for {path}"
-    if os.access(parent, os.W_OK):
+    if os.access(parent, os.W_OK) and os.access(parent, os.R_OK):
         return True, None
-    return False, f"{parent} is not writable"
+    return False, f"{parent} lacks read/write permissions"
 
 
 def _first_existing_parent(path: Path) -> Path | None:
@@ -366,4 +372,234 @@ def _check_config_validity(
             },
         ),
         effective,
+    )
+
+
+def _check_thermal_sensors() -> CheckResult:
+    """Check if thermal sensors can be read on this system."""
+    detail: dict[str, Any] = {
+        "supported": hasattr(psutil, "sensors_temperatures"),
+    }
+    if not hasattr(psutil, "sensors_temperatures"):
+        return CheckResult(
+            name="thermal",
+            status=CheckStatus.WARN,
+            summary="thermal sensors are not supported on this platform",
+            detail=detail,
+        )
+    try:
+        temps = psutil.sensors_temperatures()
+        detail["sensors"] = {k: [t._asdict() for t in v] for k, v in temps.items()}
+        if not temps:
+            return CheckResult(
+                name="thermal",
+                status=CheckStatus.WARN,
+                summary="no thermal sensors detected on host",
+                detail=detail,
+            )
+        all_temps = [t.current for v in temps.values() for t in v]
+        max_temp = max(all_temps) if all_temps else None
+        detail["max_temp"] = max_temp
+        summary_msg = (
+            f"thermal sensors are readable (max temp: {max_temp}°C)"
+            if max_temp is not None
+            else "thermal sensors are readable but returned no values"
+        )
+        return CheckResult(
+            name="thermal",
+            status=CheckStatus.OK,
+            summary=summary_msg,
+            detail=detail,
+        )
+    except Exception as exc:
+        detail["error"] = str(exc)
+        return CheckResult(
+            name="thermal",
+            status=CheckStatus.WARN,
+            summary=f"failed to read thermal sensors: {exc}",
+            detail=detail,
+        )
+
+
+def _check_battery_telemetry() -> CheckResult:
+    """Check if battery/power status can be read on this system."""
+    detail: dict[str, Any] = {
+        "supported": hasattr(psutil, "sensors_battery"),
+    }
+    if not hasattr(psutil, "sensors_battery"):
+        return CheckResult(
+            name="battery",
+            status=CheckStatus.WARN,
+            summary="battery telemetry is not supported on this platform",
+            detail=detail,
+        )
+    try:
+        battery = psutil.sensors_battery()
+        if battery is None:
+            detail["present"] = False
+            return CheckResult(
+                name="battery",
+                status=CheckStatus.OK,
+                summary="no battery detected; running on AC power",
+                detail=detail,
+            )
+        detail["present"] = True
+        detail["percent"] = battery.percent
+        detail["power_plugged"] = battery.power_plugged
+        detail["secsleft"] = battery.secsleft
+        status_str = "plugged in" if battery.power_plugged else "discharging"
+        return CheckResult(
+            name="battery",
+            status=CheckStatus.OK,
+            summary=f"battery detected: {battery.percent}% ({status_str})",
+            detail=detail,
+        )
+    except Exception as exc:
+        detail["error"] = str(exc)
+        return CheckResult(
+            name="battery",
+            status=CheckStatus.WARN,
+            summary=f"failed to read battery telemetry: {exc}",
+            detail=detail,
+        )
+
+
+def _check_port_conflicts(effective: EffectiveConfig | None) -> CheckResult:
+    """Check if the configured ComputeCop port is already in use."""
+    if effective is None:
+        return CheckResult(
+            name="port_conflict",
+            status=CheckStatus.WARN,
+            summary="port check skipped because configuration is invalid",
+            detail={},
+        )
+    host = effective.config.server.host
+    port = effective.config.server.port
+    detail = {"host": host, "port": port}
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+        detail["in_use"] = False
+        return CheckResult(
+            name="port_conflict",
+            status=CheckStatus.OK,
+            summary=f"port {port} on {host} is free",
+            detail=detail,
+        )
+    except OSError as exc:
+        detail["in_use"] = True
+        detail["error"] = str(exc)
+        return CheckResult(
+            name="port_conflict",
+            status=CheckStatus.FAIL,
+            summary=f"port {port} on {host} is already in use",
+            detail=detail,
+        )
+
+
+def _check_config_source_conflicts(effective: EffectiveConfig | None) -> CheckResult:
+    """Check if conflicting configuration sources exist (e.g. env variables overriding TOML)."""
+    if effective is None:
+        return CheckResult(
+            name="config_conflict",
+            status=CheckStatus.WARN,
+            summary="config source check skipped because configuration is invalid",
+            detail={},
+        )
+    from computecop.config import ConfigSource, _leaf_paths, _load_toml_config
+    config_path = effective.config_path
+    sources = effective.sources
+    detail: dict[str, Any] = {
+        "config_path": str(config_path) if config_path is not None else None,
+        "env_var_config_path": os.environ.get("COMPUTECOP_CONFIG"),
+    }
+    conflicts: list[dict[str, Any]] = []
+    if os.environ.get("COMPUTECOP_CONFIG") and config_path is not None:
+        env_path = Path(os.environ["COMPUTECOP_CONFIG"]).expanduser().resolve()
+        try:
+            resolved_path = config_path.resolve()
+        except Exception:
+            resolved_path = config_path
+        if env_path != resolved_path:
+            conflicts.append({
+                "type": "config_file_conflict",
+                "message": (
+                    f"CLI config path '{config_path}' overrides "
+                    f"COMPUTECOP_CONFIG env var '{env_path}'"
+                ),
+            })
+    if config_path is not None and config_path.exists():
+        try:
+            toml_overlay = _load_toml_config(config_path)
+            toml_paths = set(_leaf_paths(toml_overlay))
+            for path in toml_paths:
+                source = sources.get(path)
+                if source == ConfigSource.ENVIRONMENT:
+                    conflicts.append({
+                        "type": "key_override_conflict",
+                        "key": path,
+                        "message": (
+                            f"key '{path}' defined in TOML is "
+                            "overridden by environment variable"
+                        ),
+                    })
+        except Exception as exc:
+            detail["toml_parse_error"] = str(exc)
+    detail["conflicts"] = conflicts
+    if conflicts:
+        summary_msg = f"{len(conflicts)} config source override(s)/conflict(s) detected"
+        return CheckResult(
+            name="config_conflict",
+            status=CheckStatus.WARN,
+            summary=summary_msg,
+            detail=detail,
+        )
+    return CheckResult(
+        name="config_conflict",
+        status=CheckStatus.OK,
+        summary="no configuration source conflicts/overrides detected",
+        detail=detail,
+    )
+
+
+def _check_endpoint_capabilities(effective: EffectiveConfig | None) -> CheckResult:
+    """Report capabilities of all configured endpoints."""
+    if effective is None:
+        return CheckResult(
+            name="endpoint_capabilities",
+            status=CheckStatus.WARN,
+            summary="endpoint capabilities check skipped because configuration is invalid",
+            detail={},
+        )
+    from computecop.endpoints import EndpointCapabilityRegistry
+    from computecop.upstream import UpstreamRouter
+    endpoints = effective.config.endpoints
+    if not endpoints:
+        return CheckResult(
+            name="endpoint_capabilities",
+            status=CheckStatus.FAIL,
+            summary="no endpoints configured to determine capabilities",
+            detail={"endpoints": []},
+        )
+    routes = [endpoint.to_route() for endpoint in endpoints]
+    router = UpstreamRouter(routes)
+    registry = EndpointCapabilityRegistry(router)
+    results: list[dict[str, Any]] = []
+    for route in routes:
+        caps = registry.capabilities_for(route)
+        results.append({
+            "name": route.name,
+            "kind": route.kind.value,
+            "supports_streaming": caps.supports_streaming,
+            "supports_model_list": caps.supports_model_list,
+            "supports_offload": caps.supports_offload,
+            "default_context_tokens": caps.default_context_tokens,
+            "default_output_tokens": caps.default_output_tokens,
+        })
+    return CheckResult(
+        name="endpoint_capabilities",
+        status=CheckStatus.OK,
+        summary=f"retrieved capabilities for {len(results)} configured endpoint(s)",
+        detail={"endpoints": results},
     )
