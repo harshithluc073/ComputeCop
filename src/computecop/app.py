@@ -6,11 +6,12 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from time import monotonic
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from computecop import __version__
 from computecop.admission import AdmissionController
@@ -20,6 +21,7 @@ from computecop.config import RuntimeConfig, cached_config
 from computecop.endpoints import EndpointCapabilityRegistry, resolve_api_family
 from computecop.events import JsonlEventStore
 from computecop.health import EndpointHealthWatcher
+from computecop.logging import get_logger
 from computecop.models import DecisionType, RequestClass, RequestMetadata, to_jsonable
 from computecop.offload import OffloadManager
 from computecop.platform import current_platform_name
@@ -34,6 +36,8 @@ from computecop.telemetry_loop import TelemetryLoop
 from computecop.thermal import ThermalDetector, ThermalThresholds
 from computecop.upstream import UpstreamFailure, UpstreamFailureCategory, UpstreamRouter
 from computecop.yielding import RamYieldController
+
+logger = get_logger("app")
 
 
 @dataclass(slots=True)
@@ -213,6 +217,23 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.runtime = runtime
         await runtime.start()
+
+        is_local = runtime.config.server.host in {"127.0.0.1", "localhost", "::1"}
+        if not is_local:
+            if not runtime.config.server.enable_web_ui:
+                logger.warning(
+                    "Web UI is disabled on non-local bind '%s' "
+                    "because enable_web_ui is not set to true.",
+                    runtime.config.server.host,
+                )
+            else:
+                logger.warning(
+                    "WARNING: Web UI is enabled on non-local bind '%s'. "
+                    "This exposes system telemetry, endpoints, and queue "
+                    "configuration to the network.",
+                    runtime.config.server.host,
+                )
+
         try:
             yield
         finally:
@@ -225,6 +246,65 @@ def create_app(config: RuntimeConfig | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.runtime = runtime
+
+    @app.middleware("http")
+    async def web_ui_security_guard(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        path = request.url.path
+        web_ui_paths = {
+            "/",
+            "/state",
+            "/telemetry",
+            "/metrics",
+            "/events",
+            "/endpoints",
+            "/queue/inspect",
+            "/queue/pause",
+            "/queue/resume",
+        }
+        is_web_ui = path in web_ui_paths or path.startswith("/decisions/")
+
+        if is_web_ui:
+            is_local = runtime.config.server.host in {"127.0.0.1", "localhost", "::1"}
+            if not is_local and not runtime.config.server.enable_web_ui:
+                logger.warning(
+                    "Blocked Web UI request to '%s' on non-local bind '%s' "
+                    "(enable_web_ui is false).",
+                    path,
+                    runtime.config.server.host,
+                )
+                if path == "/":
+                    return HTMLResponse(
+                        content=(
+                            "<h1>403 Forbidden</h1><p>Web UI is disabled on "
+                            "non-local binds unless explicitly enabled in configuration.</p>"
+                        ),
+                        status_code=403,
+                    )
+                else:
+                    return JSONResponse(
+                        content={
+                            "error": (
+                                "Web UI is disabled on non-local binds unless explicitly enabled"
+                            )
+                        },
+                        status_code=403,
+                    )
+        return await call_next(request)
+
+    @app.get("/", response_class=HTMLResponse)
+    async def read_dashboard() -> HTMLResponse:
+        static_dir = Path(__file__).parent / "web" / "static"
+        index_path = static_dir / "index.html"
+        try:
+            content = index_path.read_text(encoding="utf-8")
+            return HTMLResponse(content=content)
+        except Exception as e:
+            return HTMLResponse(
+                content=f"<h1>500 Internal Server Error</h1><p>Failed to load dashboard: {e}</p>",
+                status_code=500,
+            )
 
     @app.get("/health")
     async def health() -> dict[str, object]:

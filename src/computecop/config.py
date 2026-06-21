@@ -246,7 +246,13 @@ class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
     expose_remote: bool = False
-    enable_web_ui: bool = False
+    enable_web_ui: bool = Field(
+        default=False,
+        description=(
+            "WARNING: Enabling the web UI on non-local binds allows remote network access to "
+            "detailed system telemetry, endpoints, and queue states. Expose with caution."
+        ),
+    )
 
 
 class RuntimeConfig(BaseModel):
