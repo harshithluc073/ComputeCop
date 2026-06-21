@@ -344,8 +344,10 @@ async def test_dashboard_hides_persistence_warning_when_healthy() -> None:
     assert "Event persistence disabled" not in output
 
 
-def test_cli_dashboard_wires_endpoint_registry() -> None:
+def test_cli_dashboard_wires_runtime_dependencies() -> None:
     from pathlib import Path
 
     source = Path("src/computecop/cli.py").read_text(encoding="utf-8")
-    assert "Dashboard(runtime.state, endpoint_registry=runtime.endpoint_registry)" in source
+    assert "DashboardQueueController" in source
+    assert "endpoint_registry=runtime.endpoint_registry" in source
+    assert "queue_controller=queue_controller" in source

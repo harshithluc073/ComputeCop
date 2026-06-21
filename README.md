@@ -171,6 +171,21 @@ The dashboard displays:
 - heavy local developer processes
 - a warning panel when event persistence is disabled
 
+### Interactive Controls
+
+While the dashboard is running, use the keyboard shortcuts shown in the footer:
+
+| Key | Action |
+| --- | --- |
+| `P` | Pause background queue processing (instant) |
+| `R` | Resume background queue processing (instant) |
+| `D` | Drain the queue (requires pressing `D` again to confirm) |
+| `T` | Toggle expanded detail panels |
+| `Q` | Quit the dashboard |
+
+Press `C` to cancel a pending drain confirmation. Foreground prompts continue
+unaffected by pause, resume, and drain actions.
+
 ## Decision Explainability
 
 Every proxied request receives a correlation ID and a policy trace ID in
