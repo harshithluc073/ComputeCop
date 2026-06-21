@@ -45,7 +45,7 @@ class Remediation:
     """Actionable remediation hint for a degraded or failed diagnostic check."""
 
     severity: str  # "info", "warning", or "error"
-    action: str    # Description of what the user should do
+    action: str  # Description of what the user should do
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -181,10 +181,7 @@ def _check_platform_support() -> CheckResult:
         remediations=(
             Remediation(
                 severity="warning",
-                action=(
-                    "run ComputeCop on a supported platform "
-                    "(Windows, macOS, or Linux)"
-                ),
+                action=("run ComputeCop on a supported platform (Windows, macOS, or Linux)"),
             ),
         ),
     )
@@ -253,10 +250,7 @@ def _check_psutil_access() -> CheckResult:
             remediations=(
                 Remediation(
                     severity="error",
-                    action=(
-                        "verify user permissions and ensure psutil has "
-                        "access to system APIs"
-                    ),
+                    action=("verify user permissions and ensure psutil has access to system APIs"),
                 ),
             ),
         )
@@ -285,10 +279,7 @@ async def _check_endpoint_reachability(
             remediations=(
                 Remediation(
                     severity="warning",
-                    action=(
-                        "fix configuration issues to enable endpoint "
-                        "reachability checks"
-                    ),
+                    action=("fix configuration issues to enable endpoint reachability checks"),
                 ),
             ),
         )
@@ -335,8 +326,7 @@ async def _check_endpoint_reachability(
             Remediation(
                 severity="warning",
                 action=(
-                    "start a local inference engine (e.g. Ollama, "
-                    "llama.cpp) before serving traffic"
+                    "start a local inference engine (e.g. Ollama, llama.cpp) before serving traffic"
                 ),
             ),
         ),
@@ -487,8 +477,7 @@ def _check_thermal_sensors() -> CheckResult:
                 Remediation(
                     severity="info",
                     action=(
-                        "thermal throttling policy will not trigger "
-                        "because sensors are unreadable"
+                        "thermal throttling policy will not trigger because sensors are unreadable"
                     ),
                 ),
             ),
@@ -537,8 +526,7 @@ def _check_thermal_sensors() -> CheckResult:
                 Remediation(
                     severity="info",
                     action=(
-                        "thermal throttling policy will not trigger "
-                        "because sensors are unreadable"
+                        "thermal throttling policy will not trigger because sensors are unreadable"
                     ),
                 ),
             ),
@@ -659,6 +647,7 @@ def _check_config_source_conflicts(effective: EffectiveConfig | None) -> CheckRe
             detail={},
         )
     from computecop.config import ConfigSource, _leaf_paths, _load_toml_config
+
     config_path = effective.config_path
     sources = effective.sources
     detail: dict[str, Any] = {
@@ -673,13 +662,15 @@ def _check_config_source_conflicts(effective: EffectiveConfig | None) -> CheckRe
         except Exception:
             resolved_path = config_path
         if env_path != resolved_path:
-            conflicts.append({
-                "type": "config_file_conflict",
-                "message": (
-                    f"CLI config path '{config_path}' overrides "
-                    f"COMPUTECOP_CONFIG env var '{env_path}'"
-                ),
-            })
+            conflicts.append(
+                {
+                    "type": "config_file_conflict",
+                    "message": (
+                        f"CLI config path '{config_path}' overrides "
+                        f"COMPUTECOP_CONFIG env var '{env_path}'"
+                    ),
+                }
+            )
     if config_path is not None and config_path.exists():
         try:
             toml_overlay = _load_toml_config(config_path)
@@ -687,14 +678,16 @@ def _check_config_source_conflicts(effective: EffectiveConfig | None) -> CheckRe
             for path in toml_paths:
                 source = sources.get(path)
                 if source == ConfigSource.ENVIRONMENT:
-                    conflicts.append({
-                        "type": "key_override_conflict",
-                        "key": path,
-                        "message": (
-                            f"key '{path}' defined in TOML is "
-                            "overridden by environment variable"
-                        ),
-                    })
+                    conflicts.append(
+                        {
+                            "type": "key_override_conflict",
+                            "key": path,
+                            "message": (
+                                f"key '{path}' defined in TOML is "
+                                "overridden by environment variable"
+                            ),
+                        }
+                    )
         except Exception as exc:
             detail["toml_parse_error"] = str(exc)
     detail["conflicts"] = conflicts
@@ -708,10 +701,7 @@ def _check_config_source_conflicts(effective: EffectiveConfig | None) -> CheckRe
             remediations=(
                 Remediation(
                     severity="info",
-                    action=(
-                        "clean up conflicting configuration sources "
-                        "to prevent overrides"
-                    ),
+                    action=("clean up conflicting configuration sources to prevent overrides"),
                 ),
             ),
         )
@@ -734,6 +724,7 @@ def _check_endpoint_capabilities(effective: EffectiveConfig | None) -> CheckResu
         )
     from computecop.endpoints import EndpointCapabilityRegistry
     from computecop.upstream import UpstreamRouter
+
     endpoints = effective.config.endpoints
     if not endpoints:
         return CheckResult(
@@ -744,10 +735,7 @@ def _check_endpoint_capabilities(effective: EffectiveConfig | None) -> CheckResu
             remediations=(
                 Remediation(
                     severity="error",
-                    action=(
-                        "configure at least one upstream endpoint to "
-                        "determine capabilities"
-                    ),
+                    action=("configure at least one upstream endpoint to determine capabilities"),
                 ),
             ),
         )
@@ -757,15 +745,17 @@ def _check_endpoint_capabilities(effective: EffectiveConfig | None) -> CheckResu
     results: list[dict[str, Any]] = []
     for route in routes:
         caps = registry.capabilities_for(route)
-        results.append({
-            "name": route.name,
-            "kind": route.kind.value,
-            "supports_streaming": caps.supports_streaming,
-            "supports_model_list": caps.supports_model_list,
-            "supports_offload": caps.supports_offload,
-            "default_context_tokens": caps.default_context_tokens,
-            "default_output_tokens": caps.default_output_tokens,
-        })
+        results.append(
+            {
+                "name": route.name,
+                "kind": route.kind.value,
+                "supports_streaming": caps.supports_streaming,
+                "supports_model_list": caps.supports_model_list,
+                "supports_offload": caps.supports_offload,
+                "default_context_tokens": caps.default_context_tokens,
+                "default_output_tokens": caps.default_output_tokens,
+            }
+        )
     return CheckResult(
         name="endpoint_capabilities",
         status=CheckStatus.OK,
