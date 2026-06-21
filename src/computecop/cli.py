@@ -24,6 +24,7 @@ from computecop.config import (
     load_effective_config,
 )
 from computecop.dashboard import Dashboard
+from computecop.dashboard_controls import DashboardQueueController
 from computecop.doctor import CheckStatus, DiagnosticReport, run_diagnostics
 from computecop.events import (
     JsonlEventStore,
@@ -223,8 +224,16 @@ def dashboard(ctx: typer.Context) -> None:
 
     async def _run_dashboard() -> None:
         await runtime.start()
+        queue_controller = DashboardQueueController(
+            runtime.queue,
+            drain_seconds=config.queue.shutdown_drain_seconds,
+        )
         dashboard_task = asyncio.create_task(
-            Dashboard(runtime.state, endpoint_registry=runtime.endpoint_registry).run()
+            Dashboard(
+                runtime.state,
+                endpoint_registry=runtime.endpoint_registry,
+                queue_controller=queue_controller,
+            ).run()
         )
         try:
             await dashboard_task

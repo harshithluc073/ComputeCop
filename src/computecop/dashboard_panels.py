@@ -30,6 +30,7 @@ class DashboardLayout:
     worker_height: int = 8
     trace_height: int = 10
     decision_height: int = 12
+    footer_height: int = 3
 
 
 DEFAULT_LAYOUT = DashboardLayout()
@@ -86,10 +87,42 @@ def render_persistence_warning(
     return panel(line, title="Warning", border_style="red", layout=layout)
 
 
+def render_footer(
+    *,
+    detail_mode: bool = False,
+    pending_action: str | None = None,
+    status_message: str | None = None,
+    draining: bool = False,
+    layout: DashboardLayout = DEFAULT_LAYOUT,
+) -> Panel:
+    shortcuts = "[P]ause  [R]esume  [D]rain  [T]oggle detail  [Q]uit"
+    if pending_action == "drain":
+        shortcuts += "  |  Confirm: [D]  Cancel: [C]"
+    line = Text.assemble(
+        (shortcuts, "dim"),
+        "  ",
+        (f"Detail: {'ON' if detail_mode else 'OFF'}", "cyan"),
+    )
+    if draining:
+        line.append("  ")
+        line.append(("Draining queue...", "bold yellow"))
+    if status_message:
+        line.append("  ")
+        line.append((status_message, "yellow"))
+    return panel(
+        Align.center(line),
+        title="Controls",
+        border_style="dim",
+        layout=layout,
+        height=layout.footer_height,
+    )
+
+
 def render_resource_panel(
     snapshot: RuntimeSnapshot,
     *,
     layout: DashboardLayout = DEFAULT_LAYOUT,
+    detail_mode: bool = False,
 ) -> Panel:
     telemetry = snapshot.telemetry
     table = Table.grid(expand=True)
@@ -127,7 +160,7 @@ def render_resource_panel(
             f"W {format_bytes_per_second(telemetry.disk_write_bytes_per_sec)}"
         ),
     )
-    process_table = _heavy_process_table(telemetry)
+    process_table = _heavy_process_table(telemetry, detail_mode=detail_mode)
     return panel(
         Group(table, process_table),
         title="Resources",
@@ -137,13 +170,14 @@ def render_resource_panel(
     )
 
 
-def _heavy_process_table(telemetry: TelemetrySample) -> Table:
+def _heavy_process_table(telemetry: TelemetrySample, *, detail_mode: bool = False) -> Table:
     process_table = Table(title="Heavy Processes", expand=True)
     process_table.add_column("PID", justify="right")
     process_table.add_column("Name")
     process_table.add_column("CPU", justify="right")
     process_table.add_column("RSS", justify="right")
-    for process in telemetry.heavy_processes[:6]:
+    process_limit = 10 if detail_mode else 6
+    for process in telemetry.heavy_processes[:process_limit]:
         process_table.add_row(
             str(process.pid),
             process.name[:28],
@@ -317,6 +351,7 @@ def render_trace_panel(
     snapshot: RuntimeSnapshot,
     *,
     layout: DashboardLayout = DEFAULT_LAYOUT,
+    detail_mode: bool = False,
 ) -> Panel:
     latest = snapshot.recent_decisions[0] if snapshot.recent_decisions else None
     trace = latest.trace if latest is not None else None
@@ -337,13 +372,15 @@ def render_trace_panel(
             height=layout.trace_height,
         )
 
-    for rule in trace.rules[:8]:
+    rule_limit = 16 if detail_mode else 8
+    detail_width = 120 if detail_mode else 72
+    for rule in trace.rules[:rule_limit]:
         table.add_row(
             rule.name,
             "-" if rule.observed is None else str(rule.observed),
             "-" if rule.threshold is None else str(rule.threshold),
             str(rule.penalty),
-            rule.detail[:72],
+            rule.detail[:detail_width],
         )
     if not trace.rules:
         table.add_row("-", "-", "-", "-", trace.summary)
@@ -360,6 +397,7 @@ def render_decision_panel(
     snapshot: RuntimeSnapshot,
     *,
     layout: DashboardLayout = DEFAULT_LAYOUT,
+    detail_mode: bool = False,
 ) -> Panel:
     table = Table(expand=True)
     table.add_column("When")
@@ -367,13 +405,15 @@ def render_decision_panel(
     table.add_column("Class")
     table.add_column("Juice", justify="right")
     table.add_column("Reason")
-    for decision in snapshot.recent_decisions[:8]:
+    decision_limit = 16 if detail_mode else 8
+    reason_width = 100 if detail_mode else 60
+    for decision in snapshot.recent_decisions[:decision_limit]:
         table.add_row(
             _relative_time(decision.budget.reason),
             decision.decision.value,
             decision.request_class.value,
             str(decision.budget.juice_level),
-            decision.reason[:60],
+            decision.reason[:reason_width],
         )
     if not snapshot.recent_decisions:
         table.add_row("-", "none", "-", "-", "no requests observed")
