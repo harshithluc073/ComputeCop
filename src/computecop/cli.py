@@ -25,7 +25,7 @@ from computecop.config import (
 )
 from computecop.dashboard import Dashboard
 from computecop.dashboard_controls import DashboardQueueController
-from computecop.doctor import CheckStatus, DiagnosticReport, run_diagnostics
+from computecop.doctor import CheckStatus, DiagnosticReport, Remediation, run_diagnostics
 from computecop.events import (
     JsonlEventStore,
     event_matches_correlation,
@@ -336,6 +336,20 @@ def _print_doctor_report(report: DiagnosticReport) -> None:
     console = Console()
     console.print(table)
     console.print(f"overall: {_status_label(report.overall_status)}")
+
+    remediations: list[tuple[str, Remediation]] = []
+    for check in report.checks:
+        for r in check.remediations:
+            remediations.append((check.name, r))
+    if remediations:
+        console.print("\n[bold]Remediation Hints:[/bold]")
+        for name, r in remediations:
+            color = {
+                "info": "blue",
+                "warning": "yellow",
+                "error": "red",
+            }.get(r.severity, "white")
+            console.print(f"  • [[{color}]{r.severity}[/{color}]] {name}: {r.action}")
 
 
 def _status_label(status: CheckStatus) -> str:

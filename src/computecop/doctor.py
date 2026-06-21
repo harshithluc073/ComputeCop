@@ -41,6 +41,20 @@ class CheckStatus(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class Remediation:
+    """Actionable remediation hint for a degraded or failed diagnostic check."""
+
+    severity: str  # "info", "warning", or "error"
+    action: str    # Description of what the user should do
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "severity": self.severity,
+            "action": self.action,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CheckResult:
     """Result of a single diagnostic check."""
 
@@ -48,6 +62,7 @@ class CheckResult:
     status: CheckStatus
     summary: str
     detail: dict[str, Any]
+    remediations: tuple[Remediation, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -55,6 +70,7 @@ class CheckResult:
             "status": self.status.value,
             "summary": self.summary,
             "detail": self.detail,
+            "remediations": [r.to_dict() for r in self.remediations],
         }
 
 
@@ -132,6 +148,12 @@ def _check_python_version() -> CheckResult:
         status=CheckStatus.FAIL,
         summary=f"Python {current} is older than the required {required}",
         detail=detail,
+        remediations=(
+            Remediation(
+                severity="error",
+                action="upgrade Python to 3.11 or newer",
+            ),
+        ),
     )
 
 
@@ -156,6 +178,15 @@ def _check_platform_support() -> CheckResult:
         status=CheckStatus.WARN,
         summary=f"{name} is not an officially supported platform; behavior is untested",
         detail=detail,
+        remediations=(
+            Remediation(
+                severity="warning",
+                action=(
+                    "run ComputeCop on a supported platform "
+                    "(Windows, macOS, or Linux)"
+                ),
+            ),
+        ),
     )
 
 
@@ -172,6 +203,12 @@ def _check_ram_baseline(effective: EffectiveConfig | None) -> CheckResult:
             status=CheckStatus.WARN,
             summary="host RAM capacity could not be determined",
             detail={"total_gb": None, "minimum_supported_gb": minimum},
+            remediations=(
+                Remediation(
+                    severity="warning",
+                    action="ensure system has at least the minimum required RAM",
+                ),
+            ),
         )
     profile = HostMemoryProfile(total_bytes=total_bytes, minimum_supported_gb=minimum)
     detail: dict[str, Any] = {
@@ -191,6 +228,15 @@ def _check_ram_baseline(effective: EffectiveConfig | None) -> CheckResult:
         status=CheckStatus.WARN,
         summary=f"{profile.total_gb:.1f} GiB RAM is below the {minimum:g} GiB minimum",
         detail=detail,
+        remediations=(
+            Remediation(
+                severity="warning",
+                action=(
+                    f"upgrade system RAM or close other large applications "
+                    f"to meet the {minimum:g} GiB requirement"
+                ),
+            ),
+        ),
     )
 
 
@@ -204,6 +250,15 @@ def _check_psutil_access() -> CheckResult:
             status=CheckStatus.FAIL,
             summary=f"psutil cannot read host telemetry: {exc}",
             detail={"error": str(exc)},
+            remediations=(
+                Remediation(
+                    severity="error",
+                    action=(
+                        "verify user permissions and ensure psutil has "
+                        "access to system APIs"
+                    ),
+                ),
+            ),
         )
     return CheckResult(
         name="psutil",
@@ -227,6 +282,15 @@ async def _check_endpoint_reachability(
             status=CheckStatus.WARN,
             summary="endpoints not checked because configuration is invalid",
             detail={"endpoints": []},
+            remediations=(
+                Remediation(
+                    severity="warning",
+                    action=(
+                        "fix configuration issues to enable endpoint "
+                        "reachability checks"
+                    ),
+                ),
+            ),
         )
     routes = [endpoint.to_route() for endpoint in effective.config.endpoints]
     if not routes:
@@ -235,6 +299,12 @@ async def _check_endpoint_reachability(
             status=CheckStatus.FAIL,
             summary="no upstream endpoints are configured",
             detail={"endpoints": []},
+            remediations=(
+                Remediation(
+                    severity="error",
+                    action="configure at least one upstream endpoint",
+                ),
+            ),
         )
     if not probe_endpoints:
         return CheckResult(
@@ -261,6 +331,15 @@ async def _check_endpoint_reachability(
             "start a local inference engine before serving traffic"
         ),
         detail=detail,
+        remediations=(
+            Remediation(
+                severity="warning",
+                action=(
+                    "start a local inference engine (e.g. Ollama, "
+                    "llama.cpp) before serving traffic"
+                ),
+            ),
+        ),
     )
 
 
@@ -313,6 +392,15 @@ def _check_event_log_path(effective: EffectiveConfig | None) -> CheckResult:
         status=CheckStatus.WARN,
         summary=f"event log path is not writable: {reason}",
         detail=detail,
+        remediations=(
+            Remediation(
+                severity="warning",
+                action=(
+                    "change the event log path in pyproject.toml / config "
+                    "file, or fix file/parent directory permissions"
+                ),
+            ),
+        ),
     )
 
 
@@ -351,6 +439,15 @@ def _check_config_validity(
                     "error": str(exc),
                     "config_path": str(config_path) if config_path is not None else None,
                 },
+                remediations=(
+                    Remediation(
+                        severity="error",
+                        action=(
+                            "fix syntax/values in TOML config file or "
+                            "verify COMPUTECOP_CONFIG value"
+                        ),
+                    ),
+                ),
             ),
             None,
         )
@@ -386,6 +483,15 @@ def _check_thermal_sensors() -> CheckResult:
             status=CheckStatus.WARN,
             summary="thermal sensors are not supported on this platform",
             detail=detail,
+            remediations=(
+                Remediation(
+                    severity="info",
+                    action=(
+                        "thermal throttling policy will not trigger "
+                        "because sensors are unreadable"
+                    ),
+                ),
+            ),
         )
     try:
         temps = psutil.sensors_temperatures()
@@ -396,6 +502,15 @@ def _check_thermal_sensors() -> CheckResult:
                 status=CheckStatus.WARN,
                 summary="no thermal sensors detected on host",
                 detail=detail,
+                remediations=(
+                    Remediation(
+                        severity="info",
+                        action=(
+                            "thermal throttling policy will not trigger "
+                            "because sensors are unreadable"
+                        ),
+                    ),
+                ),
             )
         all_temps = [t.current for v in temps.values() for t in v]
         max_temp = max(all_temps) if all_temps else None
@@ -418,6 +533,15 @@ def _check_thermal_sensors() -> CheckResult:
             status=CheckStatus.WARN,
             summary=f"failed to read thermal sensors: {exc}",
             detail=detail,
+            remediations=(
+                Remediation(
+                    severity="info",
+                    action=(
+                        "thermal throttling policy will not trigger "
+                        "because sensors are unreadable"
+                    ),
+                ),
+            ),
         )
 
 
@@ -432,6 +556,15 @@ def _check_battery_telemetry() -> CheckResult:
             status=CheckStatus.WARN,
             summary="battery telemetry is not supported on this platform",
             detail=detail,
+            remediations=(
+                Remediation(
+                    severity="info",
+                    action=(
+                        "battery-aware policy profiles will be inactive "
+                        "because battery telemetry is unreadable"
+                    ),
+                ),
+            ),
         )
     try:
         battery = psutil.sensors_battery()
@@ -461,6 +594,15 @@ def _check_battery_telemetry() -> CheckResult:
             status=CheckStatus.WARN,
             summary=f"failed to read battery telemetry: {exc}",
             detail=detail,
+            remediations=(
+                Remediation(
+                    severity="info",
+                    action=(
+                        "battery-aware policy profiles will be inactive "
+                        "because battery telemetry is unreadable"
+                    ),
+                ),
+            ),
         )
 
 
@@ -495,6 +637,15 @@ def _check_port_conflicts(effective: EffectiveConfig | None) -> CheckResult:
             status=CheckStatus.FAIL,
             summary=f"port {port} on {host} is already in use",
             detail=detail,
+            remediations=(
+                Remediation(
+                    severity="error",
+                    action=(
+                        f"configure a different port in config, or stop "
+                        f"the process running on port {port}"
+                    ),
+                ),
+            ),
         )
 
 
@@ -554,6 +705,15 @@ def _check_config_source_conflicts(effective: EffectiveConfig | None) -> CheckRe
             status=CheckStatus.WARN,
             summary=summary_msg,
             detail=detail,
+            remediations=(
+                Remediation(
+                    severity="info",
+                    action=(
+                        "clean up conflicting configuration sources "
+                        "to prevent overrides"
+                    ),
+                ),
+            ),
         )
     return CheckResult(
         name="config_conflict",
@@ -581,6 +741,15 @@ def _check_endpoint_capabilities(effective: EffectiveConfig | None) -> CheckResu
             status=CheckStatus.FAIL,
             summary="no endpoints configured to determine capabilities",
             detail={"endpoints": []},
+            remediations=(
+                Remediation(
+                    severity="error",
+                    action=(
+                        "configure at least one upstream endpoint to "
+                        "determine capabilities"
+                    ),
+                ),
+            ),
         )
     routes = [endpoint.to_route() for endpoint in endpoints]
     router = UpstreamRouter(routes)
