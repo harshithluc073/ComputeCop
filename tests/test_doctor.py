@@ -252,3 +252,135 @@ def test_report_status_precedence() -> None:
     fail_report = DiagnosticReport((mk(CheckStatus.WARN), mk(CheckStatus.FAIL)))
     assert fail_report.overall_status is CheckStatus.FAIL
     assert fail_report.ok is False
+
+
+import psutil
+
+
+def test_thermal_sensors_not_supported(monkeypatch: pytest.MonkeyPatch) -> None:
+    if hasattr(psutil, "sensors_temperatures"):
+        monkeypatch.delattr(psutil, "sensors_temperatures")
+    from computecop.doctor import _check_thermal_sensors
+    result = _check_thermal_sensors()
+    assert result.status is CheckStatus.WARN
+    assert "not supported" in result.summary
+    assert len(result.remediations) == 1
+    assert result.remediations[0].severity == "info"
+
+
+def test_thermal_sensors_ok_and_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(psutil, "sensors_temperatures", lambda: {}, raising=False)
+    from computecop.doctor import _check_thermal_sensors
+    result = _check_thermal_sensors()
+    assert result.status is CheckStatus.WARN
+    assert "no thermal sensors detected" in result.summary
+
+
+def test_thermal_sensors_ok_with_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeTemp:
+        def __init__(self, current: float) -> None:
+            self.current = current
+
+        def _asdict(self) -> dict:
+            return {"current": self.current}
+
+    monkeypatch.setattr(
+        psutil,
+        "sensors_temperatures",
+        lambda: {"cpu": [FakeTemp(42.5)]},
+        raising=False,
+    )
+    from computecop.doctor import _check_thermal_sensors
+    result = _check_thermal_sensors()
+    assert result.status is CheckStatus.OK
+    assert result.detail["max_temp"] == 42.5
+    assert "42.5" in result.summary
+
+
+def test_battery_telemetry_not_supported(monkeypatch: pytest.MonkeyPatch) -> None:
+    if hasattr(psutil, "sensors_battery"):
+        monkeypatch.delattr(psutil, "sensors_battery")
+    from computecop.doctor import _check_battery_telemetry
+    result = _check_battery_telemetry()
+    assert result.status is CheckStatus.WARN
+    assert "not supported" in result.summary
+
+
+def test_battery_telemetry_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(psutil, "sensors_battery", lambda: None)
+    from computecop.doctor import _check_battery_telemetry
+    result = _check_battery_telemetry()
+    assert result.status is CheckStatus.OK
+    assert "no battery detected" in result.summary
+
+
+def test_battery_telemetry_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeBattery:
+        def __init__(self) -> None:
+            self.percent = 85
+            self.power_plugged = True
+            self.secsleft = -2
+
+    monkeypatch.setattr(psutil, "sensors_battery", lambda: FakeBattery())
+    from computecop.doctor import _check_battery_telemetry
+    result = _check_battery_telemetry()
+    assert result.status is CheckStatus.OK
+    assert result.detail["percent"] == 85
+    assert "85%" in result.summary
+
+
+def test_port_conflicts_free() -> None:
+    from computecop.doctor import _check_port_conflicts
+    # Live check on standard config (normally free in tests)
+    config = _effective(Path("."))
+    result = _check_port_conflicts(config)
+    # Could be free or in use depending on machine, but shouldn't crash
+    assert result.status in (CheckStatus.OK, CheckStatus.FAIL)
+
+
+def test_port_conflicts_in_use(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import socket
+
+    def mock_bind(self, address) -> None:
+        raise OSError("address already in use")
+
+    monkeypatch.setattr(socket.socket, "bind", mock_bind)
+    from computecop.doctor import _check_port_conflicts
+    result = _check_port_conflicts(_effective(tmp_path))
+    assert result.status is CheckStatus.FAIL
+    assert "already in use" in result.summary
+    assert len(result.remediations) == 1
+    assert result.remediations[0].severity == "error"
+
+
+def test_config_source_conflicts_none(tmp_path: Path) -> None:
+    from computecop.doctor import _check_config_source_conflicts
+    result = _check_config_source_conflicts(_effective(tmp_path))
+    assert result.status is CheckStatus.OK
+
+
+def test_config_source_conflicts_detected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    effective = _effective(tmp_path)
+    monkeypatch.setenv("COMPUTECOP_CONFIG", str(tmp_path / "env_config.toml"))
+    effective.config_path = tmp_path / "cli_config.toml"
+    from computecop.doctor import _check_config_source_conflicts
+    result = _check_config_source_conflicts(effective)
+    assert result.status is CheckStatus.WARN
+    assert "conflict" in result.summary
+
+
+def test_endpoint_capabilities_ok(tmp_path: Path) -> None:
+    from computecop.doctor import _check_endpoint_capabilities
+    result = _check_endpoint_capabilities(_effective(tmp_path))
+    assert result.status is CheckStatus.OK
+    assert len(result.detail["endpoints"]) == 1
+    assert result.detail["endpoints"][0]["name"] == "ollama"
+
+
+def test_endpoint_capabilities_empty(tmp_path: Path) -> None:
+    from computecop.doctor import _check_endpoint_capabilities
+    result = _check_endpoint_capabilities(_effective(tmp_path, endpoints=[]))
+    assert result.status is CheckStatus.FAIL
+
