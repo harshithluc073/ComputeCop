@@ -30,7 +30,7 @@ class DashboardLayout:
     worker_height: int = 8
     trace_height: int = 10
     decision_height: int = 12
-    footer_height: int = 3
+    footer_height: int = 6
 
 
 DEFAULT_LAYOUT = DashboardLayout()
@@ -98,19 +98,21 @@ def render_footer(
     shortcuts = "[P]ause  [R]esume  [D]rain  [T]oggle detail  [Q]uit"
     if pending_action == "drain":
         shortcuts += "  |  Confirm: [D]  Cancel: [C]"
-    line = Text.assemble(
-        (shortcuts, "dim"),
-        "  ",
-        (f"Detail: {'ON' if detail_mode else 'OFF'}", "cyan"),
-    )
+    header = Text(shortcuts, style="dim")
+    detail = Text(f"Detail: {'ON' if detail_mode else 'OFF'}", style="cyan")
+    status = Text()
     if draining:
-        line.append("  ")
-        line.append(("Draining queue...", "bold yellow"))
+        status.append("Draining queue...", "bold yellow")
     if status_message:
-        line.append("  ")
-        line.append((status_message, "yellow"))
+        if draining:
+            status.append("  ")
+        status.append(status_message, "yellow")
+    rows = [Align.center(header), Align.center(detail)]
+    if status.plain:
+        rows.append(Align.center(status))
+    body = Group(*rows)
     return panel(
-        Align.center(line),
+        body,
         title="Controls",
         border_style="dim",
         layout=layout,

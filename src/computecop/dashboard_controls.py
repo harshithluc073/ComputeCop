@@ -38,11 +38,12 @@ class DashboardQueueController:
     async def resume(self) -> None:
         await self.queue.resume()
 
-    def start_drain(self) -> None:
+    async def start_drain(self) -> None:
         if self._drain_task is not None and not self._drain_task.done():
             return
         deadline = monotonic() + self.drain_seconds
         self._drain_task = asyncio.create_task(self.queue.drain(deadline))
+        await asyncio.sleep(0)
 
     @property
     def draining(self) -> bool:
@@ -75,7 +76,7 @@ class DashboardKeyHandler:
 
         if state.pending_action == "drain":
             if normalized == "d":
-                self._controller.start_drain()
+                await self._controller.start_drain()
                 state.pending_action = None
                 self._set_status(state, "Queue drain started", now)
                 return
