@@ -223,7 +223,9 @@ def dashboard(ctx: typer.Context) -> None:
 
     async def _run_dashboard() -> None:
         await runtime.start()
-        dashboard_task = asyncio.create_task(Dashboard(runtime.state).run())
+        dashboard_task = asyncio.create_task(
+            Dashboard(runtime.state, endpoint_registry=runtime.endpoint_registry).run()
+        )
         try:
             await dashboard_task
         except asyncio.CancelledError:
