@@ -24,7 +24,7 @@ class DashboardLayout:
     panel_width: int = 120
     header_height: int = 3
     resource_height: int = 12
-    policy_height: int = 8
+    policy_height: int = 13
     scheduler_height: int = 12
     endpoint_height: int = 10
     worker_height: int = 8
