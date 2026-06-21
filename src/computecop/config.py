@@ -246,6 +246,7 @@ class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
     expose_remote: bool = False
+    enable_web_ui: bool = False
 
 
 class RuntimeConfig(BaseModel):
@@ -550,6 +551,8 @@ def _env_config_overlay(environ: Mapping[str, str]) -> dict[str, Any]:
         server["port"] = port
     if (expose_remote := _optional_bool_env("COMPUTECOP_EXPOSE_REMOTE", environ)) is not None:
         server["expose_remote"] = expose_remote
+    if (enable_web_ui := _optional_bool_env("COMPUTECOP_ENABLE_WEB_UI", environ)) is not None:
+        server["enable_web_ui"] = enable_web_ui
     if server:
         overlay["server"] = server
 

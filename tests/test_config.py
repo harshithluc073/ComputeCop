@@ -181,3 +181,24 @@ base_context_tokens = 8192
     # 5. Invalid profile name raises ConfigError
     with pytest.raises(ConfigError, match="invalid profile name"):
         load_config(cli_overrides={"profile": "invalid-profile-name"})
+
+
+def test_enable_web_ui_loading(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("COMPUTECOP_ENABLE_WEB_UI", raising=False)
+    config = load_config()
+    assert config.server.enable_web_ui is False
+
+    config_file = tmp_path / "computecop.toml"
+    config_file.write_text(
+        """
+[server]
+enable_web_ui = true
+""",
+        encoding="utf-8",
+    )
+    config_toml = load_config(config_path=config_file)
+    assert config_toml.server.enable_web_ui is True
+
+    monkeypatch.setenv("COMPUTECOP_ENABLE_WEB_UI", "true")
+    config_env = load_config()
+    assert config_env.server.enable_web_ui is True
